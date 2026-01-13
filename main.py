@@ -31,6 +31,57 @@ def request_signature(request_id, timestamp, signature_key):
     base = request_id + masked_timestamp(timestamp) + signature_key
     return hashlib.sha3_512(base.encode()).hexdigest().upper()
 
+def validate_environment():
+    required_vars = [
+        "COMPANY_CONFIG_FILE_ID",
+        "SUMMARY_LOG_FOLDER_ID"
+    ]
+
+    missing = [v for v in required_vars if not os.environ.get(v)]
+
+    if missing:
+        raise RuntimeError(
+            f"Missing required environment variables: {', '.join(missing)}"
+        )
+
+def validate_company_schema(df):
+    required_columns = {
+        "company_code",
+        "nav_login",
+        "nav_password",
+        "nav_tax_number",
+        "nav_signature_key",
+        "nav_base_url",
+        "target_folder_id",
+        "active",
+    }
+
+    missing = required_columns - set(df.columns)
+
+    if missing:
+        raise ValueError(
+            f"Company config Excel missing columns: {', '.join(sorted(missing))}"
+        )
+
+    if df.empty:
+        raise ValueError("Company config Excel contains no rows")
+
+    # Optional: enforce types / content
+    if not df["company_code"].is_unique:
+        raise ValueError("company_code must be unique")
+
+    invalid_urls = df[
+        ~df["nav_base_url"].astype(str).str.startswith("http")
+    ]
+    if not invalid_urls.empty:
+        raise ValueError("nav_base_url must start with http/https")
+
+    invalid_active = df[
+        ~df["active"].isin([True, False])
+    ]
+    if not invalid_active.empty:
+        raise ValueError("active column must contain TRUE/FALSE only")
+
 
 # =========================================================
 # XML builders & parsers
@@ -166,6 +217,7 @@ def load_companies_from_drive():
 
     fh.seek(0)
     df = pd.read_excel(fh, sheet_name="companies")
+    validate_company_schema(df)
     return df[df["active"] == True]
 
 def upsert_company_excel(df_new, filename, folder_id):
@@ -279,7 +331,8 @@ def weekly_invoice_export(request):
     """
     HTTP-triggered Cloud Function
     """
-
+    validate_environment()
+    
     today = datetime.date.today()
     last_monday = today - datetime.timedelta(days=today.weekday() + 7)
     last_sunday = last_monday + datetime.timedelta(days=6)
