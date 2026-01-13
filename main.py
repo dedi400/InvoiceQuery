@@ -1,0 +1,240 @@
+import io
+import os
+import uuid
+import hashlib
+import datetime
+import tempfile
+import requests
+import pandas as pd
+import xml.etree.ElementTree as ET
+
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+from google.auth import default
+
+
+# =========================================================
+# Utilities
+# =========================================================
+
+def utc_now_iso():
+    return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+def masked_timestamp(dt_iso):
+    dt = datetime.datetime.strptime(dt_iso, "%Y-%m-%dT%H:%M:%SZ")
+    return dt.strftime("%Y%m%d%H%M%S")
+
+def password_hash(password):
+    return hashlib.sha512(password.encode()).hexdigest().upper()
+
+def request_signature(request_id, timestamp, signature_key):
+    base = request_id + masked_timestamp(timestamp) + signature_key
+    return hashlib.sha3_512(base.encode()).hexdigest().upper()
+
+
+# =========================================================
+# XML builders & parsers
+# =========================================================
+
+def build_query_xml(
+    request_id,
+    timestamp,
+    login,
+    password_hash_value,
+    tax_number,
+    signature,
+    page,
+    date_from,
+    date_to
+):
+    root = ET.Element("QueryInvoiceDigestRequest")
+
+    header = ET.SubElement(root, "header")
+    ET.SubElement(header, "requestId").text = request_id
+    ET.SubElement(header, "timestamp").text = timestamp
+    ET.SubElement(header, "requestVersion").text = "3.0"
+    ET.SubElement(header, "headerVersion").text = "1.0"
+
+    user = ET.SubElement(root, "user")
+    ET.SubElement(user, "login").text = login
+    ET.SubElement(user, "passwordHash", cryptoType="SHA-512").text = password_hash_value
+    ET.SubElement(user, "taxNumber").text = tax_number
+    ET.SubElement(user, "requestSignature", cryptoType="SHA3-512").text = signature
+
+    software = ET.SubElement(root, "software")
+    ET.SubElement(software, "softwareId").text = "MULTI_COMPANY_EXPORT"
+    ET.SubElement(software, "softwareName").text = "WeeklyInvoiceExport"
+    ET.SubElement(software, "softwareOperation").text = "ONLINE_SERVICE"
+    ET.SubElement(software, "softwareMainVersion").text = "1.0"
+    ET.SubElement(software, "softwareDevName").text = "Balázs Dedinszky"
+    ET.SubElement(software, "softwareDevContact").text = "balazs.dedinszky@corpofin.hu"
+
+    ET.SubElement(root, "page").text = str(page)
+    ET.SubElement(root, "invoiceDirection").text = "INBOUND"
+
+    iq = ET.SubElement(root, "invoiceQueryParams")
+    mandatory = ET.SubElement(iq, "mandatoryQueryParams")
+    iid = ET.SubElement(mandatory, "invoiceIssueDate")
+    ET.SubElement(iid, "dateFrom").text = date_from
+    ET.SubElement(iid, "dateTo").text = date_to
+
+    return ET.tostring(root, encoding="utf-8")
+
+
+def parse_response(xml_text):
+    root = ET.fromstring(xml_text)
+
+    current_page = int(root.findtext("currentPage", "0"))
+    available_page = int(root.findtext("availablePage", "0"))
+
+    rows = []
+    for inv in root.findall(".//invoiceDigest"):
+        row = {el.tag: el.text for el in inv}
+        rows.append(row)
+
+    return rows, current_page, available_page
+
+
+# =========================================================
+# NAV query (per company)
+# =========================================================
+
+def fetch_all_invoices(company, date_from, date_to):
+    all_rows = []
+    page = 1
+
+    while True:
+        request_id = uuid.uuid4().hex[:30]
+        timestamp = utc_now_iso()
+
+        xml = build_query_xml(
+            request_id=request_id,
+            timestamp=timestamp,
+            login=company["nav_login"],
+            password_hash_value=password_hash(company["nav_password"]),
+            tax_number=str(company["nav_tax_number"]),
+            signature=request_signature(
+                request_id,
+                timestamp,
+                company["nav_signature_key"]
+            ),
+            page=page,
+            date_from=date_from,
+            date_to=date_to
+        )
+
+        resp = requests.post(
+            f"{company['nav_base_url']}/queryInvoiceDigest",
+            data=xml,
+            headers={"Content-Type": "application/xml"},
+            timeout=30
+        )
+
+        resp.raise_for_status()
+
+        rows, current_page, available_page = parse_response(resp.text)
+        all_rows.extend(rows)
+
+        if current_page >= available_page:
+            break
+
+        page += 1
+
+    return pd.DataFrame(all_rows)
+
+
+# =========================================================
+# Google Drive helpers
+# =========================================================
+
+def get_drive_service():
+    creds, _ = default()
+    return build("drive", "v3", credentials=creds)
+
+
+def load_companies_from_drive():
+    service = get_drive_service()
+    file_id = os.environ["COMPANY_CONFIG_FILE_ID"]
+
+    request = service.files().get_media(fileId=file_id)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+
+    fh.seek(0)
+    df = pd.read_excel(fh, sheet_name="companies")
+    return df[df["active"] == True]
+
+
+def upload_excel(df, filename, folder_id):
+    service = get_drive_service()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, filename)
+        df.to_excel(path, index=False)
+
+        media = MediaFileUpload(
+            path,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        service.files().create(
+            body={"name": filename, "parents": [folder_id]},
+            media_body=media,
+            fields="id"
+        ).execute()
+
+
+# =========================================================
+# Cloud Function entry point
+# =========================================================
+
+def weekly_invoice_export(request):
+    """
+    HTTP-triggered Cloud Function
+    """
+
+    today = datetime.date.today()
+    last_monday = today - datetime.timedelta(days=today.weekday() + 7)
+    last_sunday = last_monday + datetime.timedelta(days=6)
+
+    companies = load_companies_from_drive()
+
+    success = []
+    failed = []
+
+    for _, company in companies.iterrows():
+        try:
+            df = fetch_all_invoices(
+                company,
+                last_monday.isoformat(),
+                last_sunday.isoformat()
+            )
+
+            filename = (
+                f"{company['company_code']}_"
+                f"invoices_{last_monday}_{last_sunday}.xlsx"
+            )
+
+            upload_excel(
+                df,
+                filename,
+                company["target_folder_id"]
+            )
+
+            success.append(company["company_code"])
+
+        except Exception as e:
+            failed.append({
+                "company": company["company_code"],
+                "error": str(e)
+            })
+
+    return {
+        "period": f"{last_monday} – {last_sunday}",
+        "success": success,
+        "failed": failed
+    }, 200
