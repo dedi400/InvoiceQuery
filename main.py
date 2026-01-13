@@ -62,11 +62,11 @@ def build_query_xml(
     ET.SubElement(user, "requestSignature", cryptoType="SHA3-512").text = signature
 
     software = ET.SubElement(root, "software")
-    ET.SubElement(software, "softwareId").text = "MULTI_COMPANY_EXPORT"
+    ET.SubElement(software, "softwareId").text = "CORPOFIN_MULTI_COMPANY_EXPORT"
     ET.SubElement(software, "softwareName").text = "WeeklyInvoiceExport"
     ET.SubElement(software, "softwareOperation").text = "ONLINE_SERVICE"
     ET.SubElement(software, "softwareMainVersion").text = "1.0"
-    ET.SubElement(software, "softwareDevName").text = "Balázs Dedinszky"
+    ET.SubElement(software, "softwareDevName").text = "Corpofin Kft."
     ET.SubElement(software, "softwareDevContact").text = "balazs.dedinszky@corpofin.hu"
 
     ET.SubElement(root, "page").text = str(page)
@@ -168,24 +168,60 @@ def load_companies_from_drive():
     df = pd.read_excel(fh, sheet_name="companies")
     return df[df["active"] == True]
 
-
-def upload_excel(df, filename, folder_id):
+def upsert_company_excel(df_new, filename, folder_id):
     service = get_drive_service()
+
+    file_id = find_file_in_folder(service, filename, folder_id)
+
+    if file_id:
+        # Existing file → append
+        df_existing = download_excel_from_drive(file_id)
+        df_final = pd.concat([df_existing, df_new], ignore_index=True)
+    else:
+        # New file
+        df_final = df_new
 
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, filename)
-        df.to_excel(path, index=False)
+        df_final.to_excel(path, index=False)
 
         media = MediaFileUpload(
             path,
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        service.files().create(
-            body={"name": filename, "parents": [folder_id]},
-            media_body=media,
-            fields="id"
-        ).execute()
+        if file_id:
+            # Overwrite existing
+            service.files().update(
+                fileId=file_id,
+                media_body=media
+            ).execute()
+        else:
+            # Create new
+            service.files().create(
+                body={"name": filename, "parents": [folder_id]},
+                media_body=media,
+                fields="id"
+            ).execute()
+
+# replaced by upsert_company_excel
+# def upload_excel(df, filename, folder_id):
+    # service = get_drive_service()
+
+    # with tempfile.TemporaryDirectory() as tmp:
+        # path = os.path.join(tmp, filename)
+        # df.to_excel(path, index=False)
+
+        # media = MediaFileUpload(
+            # path,
+            # mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        # )
+
+        # service.files().create(
+            # body={"name": filename, "parents": [folder_id]},
+            # media_body=media,
+            # fields="id"
+        # ).execute()
 
 def upload_dataframe_as_excel(df, filename, folder_id):
     service = get_drive_service()
@@ -204,6 +240,36 @@ def upload_dataframe_as_excel(df, filename, folder_id):
             media_body=media,
             fields="id"
         ).execute()
+
+def find_file_in_folder(service, filename, folder_id):
+    query = (
+        f"name='{filename}' and "
+        f"'{folder_id}' in parents and "
+        f"trashed=false"
+    )
+
+    results = service.files().list(
+        q=query,
+        spaces="drive",
+        fields="files(id, name)"
+    ).execute()
+
+    files = results.get("files", [])
+    return files[0]["id"] if files else None
+
+def download_excel_from_drive(file_id):
+    service = get_drive_service()
+
+    request = service.files().get_media(fileId=file_id)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+
+    fh.seek(0)
+    return pd.read_excel(fh)
 
 # =========================================================
 # Cloud Function entry point
@@ -231,17 +297,18 @@ def weekly_invoice_export(request):
                 last_monday.isoformat(),
                 last_sunday.isoformat()
             )
+            
+            df["period_from"] = last_monday.isoformat()
+            df["period_to"] = last_sunday.isoformat()
+            filename = filename = f"{company['company_code']}_invoices.xlsx"
 
-            filename = (
-                f"{company['company_code']}_"
-                f"invoices_{last_monday}_{last_sunday}.xlsx"
+            #upload_excel(df,filename,company["target_folder_id"])
+            upsert_company_excel(
+            df,
+            filename,
+            company["target_folder_id"]
             )
 
-            upload_excel(
-                df,
-                filename,
-                company["target_folder_id"]
-            )
 
             log_rows.append({
                 "company_code": company["company_code"],
