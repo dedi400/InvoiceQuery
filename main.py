@@ -187,6 +187,23 @@ def upload_excel(df, filename, folder_id):
             fields="id"
         ).execute()
 
+def upload_dataframe_as_excel(df, filename, folder_id):
+    service = get_drive_service()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, filename)
+        df.to_excel(path, index=False)
+
+        media = MediaFileUpload(
+            path,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        service.files().create(
+            body={"name": filename, "parents": [folder_id]},
+            media_body=media,
+            fields="id"
+        ).execute()
 
 # =========================================================
 # Cloud Function entry point
@@ -203,10 +220,11 @@ def weekly_invoice_export(request):
 
     companies = load_companies_from_drive()
 
-    success = []
-    failed = []
+    log_rows = []
 
     for _, company in companies.iterrows():
+        processed_at = utc_now_iso()
+
         try:
             df = fetch_all_invoices(
                 company,
@@ -225,16 +243,42 @@ def weekly_invoice_export(request):
                 company["target_folder_id"]
             )
 
-            success.append(company["company_code"])
+            log_rows.append({
+                "company_code": company["company_code"],
+                "period_from": last_monday.isoformat(),
+                "period_to": last_sunday.isoformat(),
+                "status": "SUCCESS",
+                "invoice_count": len(df),
+                "error": "",
+                "processed_at": processed_at
+            })
 
         except Exception as e:
-            failed.append({
-                "company": company["company_code"],
-                "error": str(e)
+            log_rows.append({
+                "company_code": company["company_code"],
+                "period_from": last_monday.isoformat(),
+                "period_to": last_sunday.isoformat(),
+                "status": "FAILED",
+                "invoice_count": 0,
+                "error": str(e)[:500],  # safety cap
+                "processed_at": processed_at
             })
+
+    # --- Upload weekly summary log ---
+    log_df = pd.DataFrame(log_rows)
+
+    log_filename = (
+        f"summary_{last_monday}_{last_sunday}.xlsx"
+    )
+
+    upload_dataframe_as_excel(
+        log_df,
+        log_filename,
+        os.environ["SUMMARY_LOG_FOLDER_ID"]
+    )
 
     return {
         "period": f"{last_monday} – {last_sunday}",
-        "success": success,
-        "failed": failed
+        "companies_processed": len(log_rows),
+        "summary_file": log_filename
     }, 200
