@@ -259,6 +259,8 @@ def parse_response(xml_text):
 def fetch_all_invoices(company, date_from, date_to):
     all_rows = []
     page = 1
+    last_request_xml = None
+    last_response_text = None
 
     while True:
         request_id = uuid.uuid4().hex[:30]
@@ -273,13 +275,23 @@ def fetch_all_invoices(company, date_from, date_to):
             date_to
         )
 
+        last_request_xml = xml.decode("utf-8")
+
         resp = requests.post(
             f"{company['nav_base_url']}/queryInvoiceDigest",
             data=xml,
             headers={"Content-Type": "application/xml"},
             timeout=30
         )
-        resp.raise_for_status()
+
+        last_response_text = resp.text
+
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"NAV HTTP {resp.status_code}",
+                last_request_xml,
+                last_response_text
+            )
 
         rows, current_page, available_page = parse_response(resp.text)
         all_rows.extend(rows)
@@ -288,7 +300,8 @@ def fetch_all_invoices(company, date_from, date_to):
             break
         page += 1
 
-    return pd.DataFrame(all_rows)
+    return pd.DataFrame(all_rows), last_request_xml, last_response_text
+
 
 
 # =========================================================
@@ -359,7 +372,12 @@ def weekly_invoice_export(request):
 
         for _, company in companies.iterrows():
             try:
-                df = fetch_all_invoices(company, period_from, period_to)
+                df, request_xml, response_xml = fetch_all_invoices(
+                    company,
+                    period_from,
+                    period_to
+                )
+
                 df["period_from"] = period_from
                 df["period_to"] = period_to
 
@@ -376,19 +394,31 @@ def weekly_invoice_export(request):
                     "status": "SUCCESS",
                     "invoice_count": len(df),
                     "error": "",
+                    "request_xml": "",
+                    "nav_error_response": "",
                     "processed_at": utc_now_iso()
                 })
 
             except Exception as e:
+                request_xml = ""
+                response_xml = ""
+
+                if len(e.args) >= 3:
+                    request_xml = e.args[1][:30000]     # Excel-safe
+                    response_xml = e.args[2][:30000]
+
                 log_rows.append({
                     "company_code": company["company_code"],
                     "period_from": period_from,
                     "period_to": period_to,
                     "status": "FAILED",
                     "invoice_count": 0,
-                    "error": str(e)[:500],
+                    "error": str(e.args[0]),
+                    "request_xml": request_xml,
+                    "nav_error_response": response_xml,
                     "processed_at": utc_now_iso()
                 })
+
 
         log_df = pd.DataFrame(log_rows)
         upload_summary_log(
