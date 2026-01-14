@@ -92,17 +92,28 @@ def write_excel_with_autowidth(df, path, sheet_name="Sheet1", max_width=60):
 
         ws = writer.book[sheet_name]
 
+        # ---- auto column widths ----
         for idx, col in enumerate(df.columns, start=1):
             series = df[col].astype(str)
-            max_len = max(
-                series.map(len).max(),
-                len(col)
-            )
-
+            max_len = max(series.map(len).max(), len(col))
             ws.column_dimensions[get_column_letter(idx)].width = min(
                 max_len + 2,
                 max_width
             )
+
+        # ---- date formatting ----
+        for col in DATE_COLUMNS:
+            col_idx = df.columns.get_loc(col) + 1
+            col_letter = get_column_letter(col_idx)
+            for cell in ws[col_letter][1:]:
+                cell.number_format = "yyyy-mm-dd"
+
+        # ---- numeric formatting ----
+        for col in NUMERIC_COLUMNS:
+            col_idx = df.columns.get_loc(col) + 1
+            col_letter = get_column_letter(col_idx)
+            for cell in ws[col_letter][1:]:
+                cell.number_format = "#,##0"
 
 
 # =========================================================
