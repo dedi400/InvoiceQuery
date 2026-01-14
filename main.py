@@ -5,6 +5,7 @@ import hashlib
 import datetime
 import tempfile
 import requests
+from openpyxl.utils import get_column_letter
 import pandas as pd
 import xml.etree.ElementTree as ET
 
@@ -84,6 +85,24 @@ def password_hash(password):
 def request_signature(request_id, timestamp, signature_key):
     base = request_id + masked_timestamp(timestamp) + signature_key
     return hashlib.sha3_512(base.encode()).hexdigest().upper()
+
+def write_excel_with_autowidth(df, path, sheet_name="Sheet1", max_width=60):
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+
+        ws = writer.book[sheet_name]
+
+        for idx, col in enumerate(df.columns, start=1):
+            series = df[col].astype(str)
+            max_len = max(
+                series.map(len).max(),
+                len(col)
+            )
+
+            ws.column_dimensions[get_column_letter(idx)].width = min(
+                max_len + 2,
+                max_width
+            )
 
 
 # =========================================================
@@ -405,7 +424,7 @@ def upsert_company_excel(df_new, company_code, folder_id):
 
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, filename)
-        df_final.to_excel(path, index=False)
+        write_excel_with_autowidth(df_final, path)
 
         if existing_id:
             drive.update_excel(existing_id, path)
