@@ -20,29 +20,37 @@ from google.auth import default
 def utc_now_iso():
     return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
+
 def masked_timestamp(dt_iso):
     dt = datetime.datetime.strptime(dt_iso, "%Y-%m-%dT%H:%M:%SZ")
     return dt.strftime("%Y%m%d%H%M%S")
 
+
 def password_hash(password):
     return hashlib.sha512(password.encode()).hexdigest().upper()
+
 
 def request_signature(request_id, timestamp, signature_key):
     base = request_id + masked_timestamp(timestamp) + signature_key
     return hashlib.sha3_512(base.encode()).hexdigest().upper()
 
-def validate_environment():
-    required_vars = [
+
+# =========================================================
+# Validation
+# =========================================================
+
+def validate_environment(minimal=False):
+    required = ["SUMMARY_LOG_FOLDER_ID"] if minimal else [
+        "SUMMARY_LOG_FOLDER_ID",
         "COMPANY_CONFIG_FILE_ID",
-        "SUMMARY_LOG_FOLDER_ID"
     ]
 
-    missing = [v for v in required_vars if not os.environ.get(v)]
-
+    missing = [v for v in required if not os.environ.get(v)]
     if missing:
         raise RuntimeError(
             f"Missing required environment variables: {', '.join(missing)}"
         )
+
 
 def validate_company_schema(df):
     required_columns = {
@@ -57,7 +65,6 @@ def validate_company_schema(df):
     }
 
     missing = required_columns - set(df.columns)
-
     if missing:
         raise ValueError(
             f"Company config Excel missing columns: {', '.join(sorted(missing))}"
@@ -66,72 +73,108 @@ def validate_company_schema(df):
     if df.empty:
         raise ValueError("Company config Excel contains no rows")
 
-    # Optional: enforce types / content
     if not df["company_code"].is_unique:
         raise ValueError("company_code must be unique")
 
-    invalid_urls = df[
-        ~df["nav_base_url"].astype(str).str.startswith("http")
-    ]
-    if not invalid_urls.empty:
-        raise ValueError("nav_base_url must start with http/https")
-
-    invalid_active = df[
-        ~df["active"].isin([True, False])
-    ]
-    if not invalid_active.empty:
+    if not df["active"].isin([True, False]).all():
         raise ValueError("active column must contain TRUE/FALSE only")
-
-def download_drive_file_as_excel(file_id):
-    """
-    Downloads a Google Drive file and returns a pandas DataFrame.
-    Automatically handles:
-      - Google Sheets (export to xlsx)
-      - Binary Excel files (.xlsx)
-    """
-    service = get_drive_service()
-
-    # Detect file type
-    meta = service.files().get(
-        fileId=file_id,
-        fields="id, name, mimeType"
-    ).execute()
-
-    mime = meta["mimeType"]
-
-    if mime == "application/vnd.google-apps.spreadsheet":
-        request = service.files().export(
-            fileId=file_id,
-            mimeType=(
-                "application/vnd.openxmlformats-officedocument."
-                "spreadsheetml.sheet"
-            )
-        )
-    else:
-        request = service.files().get_media(fileId=file_id)
-
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-
-    fh.seek(0)
-    return fh
 
 
 # =========================================================
-# XML builders & parsers
+# Google Drive Wrapper (Shared Drive safe)
+# =========================================================
+
+class DriveClient:
+    def __init__(self):
+        creds, _ = default()
+        self.service = build("drive", "v3", credentials=creds)
+
+    def get_metadata(self, file_id):
+        return self.service.files().get(
+            fileId=file_id,
+            fields="id, name, mimeType",
+            supportsAllDrives=True
+        ).execute()
+
+    def download_as_excel_stream(self, file_id):
+        meta = self.get_metadata(file_id)
+        mime = meta["mimeType"]
+
+        if mime == "application/vnd.google-apps.spreadsheet":
+            request = self.service.files().export(
+                fileId=file_id,
+                mimeType=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "spreadsheetml.sheet"
+                )
+            )
+        else:
+            request = self.service.files().get_media(
+                fileId=file_id,
+                supportsAllDrives=True
+            )
+
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+        fh.seek(0)
+        return fh
+
+    def find_file_in_folder(self, filename, folder_id):
+        query = (
+            f"name='{filename}' and "
+            f"'{folder_id}' in parents and "
+            f"trashed=false"
+        )
+
+        results = self.service.files().list(
+            q=query,
+            fields="files(id, name)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
+
+        files = results.get("files", [])
+        return files[0]["id"] if files else None
+
+    def upload_excel(self, local_path, filename, folder_id):
+        media = MediaFileUpload(
+            local_path,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        return self.service.files().create(
+            body={"name": filename, "parents": [folder_id]},
+            media_body=media,
+            fields="id",
+            supportsAllDrives=True
+        ).execute()
+
+    def update_excel(self, file_id, local_path):
+        media = MediaFileUpload(
+            local_path,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        return self.service.files().update(
+            fileId=file_id,
+            media_body=media,
+            supportsAllDrives=True
+        ).execute()
+
+
+# =========================================================
+# NAV XML & API
 # =========================================================
 
 def build_query_xml(
     request_id,
     timestamp,
-    login,
-    password_hash_value,
-    tax_number,
-    signature,
+    company,
     page,
     date_from,
     date_to
@@ -145,21 +188,33 @@ def build_query_xml(
     ET.SubElement(header, "headerVersion").text = "1.0"
 
     user = ET.SubElement(root, "user")
-    ET.SubElement(user, "login").text = login
-    ET.SubElement(user, "passwordHash", cryptoType="SHA-512").text = password_hash_value
-    ET.SubElement(user, "taxNumber").text = tax_number
-    ET.SubElement(user, "requestSignature", cryptoType="SHA3-512").text = signature
+    ET.SubElement(user, "login").text = company["nav_login"]
+    ET.SubElement(
+        user,
+        "passwordHash",
+        cryptoType="SHA-512"
+    ).text = password_hash(company["nav_password"])
+    ET.SubElement(user, "taxNumber").text = str(company["nav_tax_number"])
+    ET.SubElement(
+        user,
+        "requestSignature",
+        cryptoType="SHA3-512"
+    ).text = request_signature(
+        request_id,
+        timestamp,
+        company["nav_signature_key"]
+    )
 
     software = ET.SubElement(root, "software")
-    ET.SubElement(software, "softwareId").text = "CORPOFIN_MULTI_COMPANY_EXPORT"
+    ET.SubElement(software, "softwareId").text = "MULTI_COMPANY_EXPORT"
     ET.SubElement(software, "softwareName").text = "WeeklyInvoiceExport"
     ET.SubElement(software, "softwareOperation").text = "ONLINE_SERVICE"
     ET.SubElement(software, "softwareMainVersion").text = "1.0"
-    ET.SubElement(software, "softwareDevName").text = "Corpofin Kft."
-    ET.SubElement(software, "softwareDevContact").text = "balazs.dedinszky@corpofin.hu"
+    ET.SubElement(software, "softwareDevName").text = "Internal"
+    ET.SubElement(software, "softwareDevContact").text = "noreply@example.com"
 
     ET.SubElement(root, "page").text = str(page)
-    ET.SubElement(root, "invoiceDirection").text = "INBOUND"
+    ET.SubElement(root, "invoiceDirection").text = "OUTBOUND"
 
     iq = ET.SubElement(root, "invoiceQueryParams")
     mandatory = ET.SubElement(iq, "mandatoryQueryParams")
@@ -172,21 +227,15 @@ def build_query_xml(
 
 def parse_response(xml_text):
     root = ET.fromstring(xml_text)
-
     current_page = int(root.findtext("currentPage", "0"))
     available_page = int(root.findtext("availablePage", "0"))
 
     rows = []
     for inv in root.findall(".//invoiceDigest"):
-        row = {el.tag: el.text for el in inv}
-        rows.append(row)
+        rows.append({el.tag: el.text for el in inv})
 
     return rows, current_page, available_page
 
-
-# =========================================================
-# NAV query (per company)
-# =========================================================
 
 def fetch_all_invoices(company, date_from, date_to):
     all_rows = []
@@ -197,19 +246,12 @@ def fetch_all_invoices(company, date_from, date_to):
         timestamp = utc_now_iso()
 
         xml = build_query_xml(
-            request_id=request_id,
-            timestamp=timestamp,
-            login=company["nav_login"],
-            password_hash_value=password_hash(company["nav_password"]),
-            tax_number=str(company["nav_tax_number"]),
-            signature=request_signature(
-                request_id,
-                timestamp,
-                company["nav_signature_key"]
-            ),
-            page=page,
-            date_from=date_from,
-            date_to=date_to
+            request_id,
+            timestamp,
+            company,
+            page,
+            date_from,
+            date_to
         )
 
         resp = requests.post(
@@ -218,7 +260,6 @@ def fetch_all_invoices(company, date_from, date_to):
             headers={"Content-Type": "application/xml"},
             timeout=30
         )
-
         resp.raise_for_status()
 
         rows, current_page, available_page = parse_response(resp.text)
@@ -226,212 +267,118 @@ def fetch_all_invoices(company, date_from, date_to):
 
         if current_page >= available_page:
             break
-
         page += 1
 
     return pd.DataFrame(all_rows)
 
 
 # =========================================================
-# Google Drive helpers
+# Business logic
 # =========================================================
 
-def get_drive_service():
-    creds, _ = default()
-    return build("drive", "v3", credentials=creds)
-
-
 def load_companies_from_drive():
+    drive = DriveClient()
     file_id = os.environ["COMPANY_CONFIG_FILE_ID"]
 
-    fh = download_drive_file_as_excel(file_id)
-
+    fh = drive.download_as_excel_stream(file_id)
     df = pd.read_excel(fh, sheet_name="companies")
 
     validate_company_schema(df)
-
     return df[df["active"] == True]
 
-def upsert_company_excel(df_new, filename, folder_id):
-    service = get_drive_service()
 
-    file_id = find_file_in_folder(service, filename, folder_id)
+def upsert_company_excel(df_new, company_code, folder_id):
+    drive = DriveClient()
+    filename = f"{company_code}_invoices.xlsx"
 
-    if file_id:
-        # Existing file → append
-        fh = download_drive_file_as_excel(file_id)
+    existing_id = drive.find_file_in_folder(filename, folder_id)
+
+    if existing_id:
+        fh = drive.download_as_excel_stream(existing_id)
         df_existing = pd.read_excel(fh)
         df_final = pd.concat([df_existing, df_new], ignore_index=True)
     else:
-        # New file
         df_final = df_new
 
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, filename)
         df_final.to_excel(path, index=False)
 
-        media = MediaFileUpload(
-            path,
-            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-        if file_id:
-            # Overwrite existing
-            service.files().update(
-                fileId=file_id,
-                media_body=media
-            ).execute()
+        if existing_id:
+            drive.update_excel(existing_id, path)
         else:
-            # Create new
-            service.files().create(
-                body={"name": filename, "parents": [folder_id]},
-                media_body=media,
-                fields="id"
-            ).execute()
+            drive.upload_excel(path, filename, folder_id)
 
-# replaced by upsert_company_excel
-# def upload_excel(df, filename, folder_id):
-    # service = get_drive_service()
 
-    # with tempfile.TemporaryDirectory() as tmp:
-        # path = os.path.join(tmp, filename)
-        # df.to_excel(path, index=False)
-
-        # media = MediaFileUpload(
-            # path,
-            # mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        # )
-
-        # service.files().create(
-            # body={"name": filename, "parents": [folder_id]},
-            # media_body=media,
-            # fields="id"
-        # ).execute()
-
-def upload_dataframe_as_excel(df, filename, folder_id):
-    service = get_drive_service()
+def upload_summary_log(df, filename):
+    drive = DriveClient()
+    folder_id = os.environ["SUMMARY_LOG_FOLDER_ID"]
 
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, filename)
         df.to_excel(path, index=False)
+        drive.upload_excel(path, filename, folder_id)
 
-        media = MediaFileUpload(
-            path,
-            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-        service.files().create(
-            body={"name": filename, "parents": [folder_id]},
-            media_body=media,
-            fields="id"
-        ).execute()
-
-def find_file_in_folder(service, filename, folder_id):
-    query = (
-        f"name='{filename}' and "
-        f"'{folder_id}' in parents and "
-        f"trashed=false"
-    )
-
-    results = service.files().list(
-        q=query,
-        spaces="drive",
-        fields="files(id, name)"
-    ).execute()
-
-    files = results.get("files", [])
-    return files[0]["id"] if files else None
-
-def download_excel_from_drive(file_id):
-    service = get_drive_service()
-
-    request = service.files().get_media(fileId=file_id)
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-
-    fh.seek(0)
-    return pd.read_excel(fh)
 
 # =========================================================
 # Cloud Function entry point
 # =========================================================
 
 def weekly_invoice_export(request):
-    """
-    HTTP-triggered Cloud Function
-    """
-    validate_environment()
-    
     today = datetime.date.today()
     last_monday = today - datetime.timedelta(days=today.weekday() + 7)
     last_sunday = last_monday + datetime.timedelta(days=6)
 
-    companies = load_companies_from_drive()
+    period_from = last_monday.isoformat()
+    period_to = last_sunday.isoformat()
 
-    log_rows = []
+    try:
+        validate_environment()
+        companies = load_companies_from_drive()
 
-    for _, company in companies.iterrows():
-        processed_at = utc_now_iso()
+        log_rows = []
 
-        try:
-            df = fetch_all_invoices(
-                company,
-                last_monday.isoformat(),
-                last_sunday.isoformat()
-            )
-            
-            df["period_from"] = last_monday.isoformat()
-            df["period_to"] = last_sunday.isoformat()
-            filename = filename = f"{company['company_code']}_invoices.xlsx"
+        for _, company in companies.iterrows():
+            try:
+                df = fetch_all_invoices(company, period_from, period_to)
+                df["period_from"] = period_from
+                df["period_to"] = period_to
 
-            #upload_excel(df,filename,company["target_folder_id"])
-            upsert_company_excel(
-            df,
-            filename,
-            company["target_folder_id"]
-            )
+                upsert_company_excel(
+                    df,
+                    company["company_code"],
+                    company["target_folder_id"]
+                )
 
+                log_rows.append({
+                    "company_code": company["company_code"],
+                    "period_from": period_from,
+                    "period_to": period_to,
+                    "status": "SUCCESS",
+                    "invoice_count": len(df),
+                    "error": "",
+                    "processed_at": utc_now_iso()
+                })
 
-            log_rows.append({
-                "company_code": company["company_code"],
-                "period_from": last_monday.isoformat(),
-                "period_to": last_sunday.isoformat(),
-                "status": "SUCCESS",
-                "invoice_count": len(df),
-                "error": "",
-                "processed_at": processed_at
-            })
+            except Exception as e:
+                log_rows.append({
+                    "company_code": company["company_code"],
+                    "period_from": period_from,
+                    "period_to": period_to,
+                    "status": "FAILED",
+                    "invoice_count": 0,
+                    "error": str(e)[:500],
+                    "processed_at": utc_now_iso()
+                })
 
-        except Exception as e:
-            log_rows.append({
-                "company_code": company["company_code"],
-                "period_from": last_monday.isoformat(),
-                "period_to": last_sunday.isoformat(),
-                "status": "FAILED",
-                "invoice_count": 0,
-                "error": str(e)[:500],  # safety cap
-                "processed_at": processed_at
-            })
+        log_df = pd.DataFrame(log_rows)
+        upload_summary_log(
+            log_df,
+            f"summary_{period_from}_{period_to}.xlsx"
+        )
 
-    # --- Upload weekly summary log ---
-    log_df = pd.DataFrame(log_rows)
+        return {"status": "ok", "companies": len(log_rows)}, 200
 
-    log_filename = (
-        f"summary_{last_monday}_{last_sunday}.xlsx"
-    )
-
-    upload_dataframe_as_excel(
-        log_df,
-        log_filename,
-        os.environ["SUMMARY_LOG_FOLDER_ID"]
-    )
-
-    return {
-        "period": f"{last_monday} – {last_sunday}",
-        "companies_processed": len(log_rows),
-        "summary_file": log_filename
-    }, 200
+    except Exception as e:
+        print("CRITICAL FAILURE:", str(e))
+        raise
