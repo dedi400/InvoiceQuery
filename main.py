@@ -179,25 +179,39 @@ def build_query_xml(
     date_from,
     date_to
 ):
-    root = ET.Element("QueryInvoiceDigestRequest")
+    NS_API = "http://schemas.nav.gov.hu/OSA/3.0/api"
+    NS_COMMON = "http://schemas.nav.gov.hu/NTCA/1.0/common"
 
-    header = ET.SubElement(root, "header")
-    ET.SubElement(header, "requestId").text = request_id
-    ET.SubElement(header, "timestamp").text = timestamp
-    ET.SubElement(header, "requestVersion").text = "3.0"
-    ET.SubElement(header, "headerVersion").text = "1.0"
+    ET.register_namespace("", NS_API)
+    ET.register_namespace("common", NS_COMMON)
 
-    user = ET.SubElement(root, "user")
-    ET.SubElement(user, "login").text = company["nav_login"]
+    root = ET.Element(f"{{{NS_API}}}QueryInvoiceDigestRequest")
+
+    # --- header (common) ---
+    header = ET.SubElement(root, f"{{{NS_COMMON}}}header")
+    ET.SubElement(header, f"{{{NS_COMMON}}}requestId").text = request_id
+    ET.SubElement(header, f"{{{NS_COMMON}}}timestamp").text = timestamp
+    ET.SubElement(header, f"{{{NS_COMMON}}}requestVersion").text = "3.0"
+    ET.SubElement(header, f"{{{NS_COMMON}}}headerVersion").text = "1.0"
+
+    # --- user (common) ---
+    user = ET.SubElement(root, f"{{{NS_COMMON}}}user")
+    ET.SubElement(user, f"{{{NS_COMMON}}}login").text = company["nav_login"]
+
     ET.SubElement(
         user,
-        "passwordHash",
+        f"{{{NS_COMMON}}}passwordHash",
         cryptoType="SHA-512"
     ).text = password_hash(company["nav_password"])
-    ET.SubElement(user, "taxNumber").text = str(company["nav_tax_number"])
+
     ET.SubElement(
         user,
-        "requestSignature",
+        f"{{{NS_COMMON}}}taxNumber"
+    ).text = str(company["nav_tax_number"])
+
+    ET.SubElement(
+        user,
+        f"{{{NS_COMMON}}}requestSignature",
         cryptoType="SHA3-512"
     ).text = request_signature(
         request_id,
@@ -205,24 +219,29 @@ def build_query_xml(
         company["nav_signature_key"]
     )
 
-    software = ET.SubElement(root, "software")
-    ET.SubElement(software, "softwareId").text = "MULTI_COMPANY_EXPORT"
-    ET.SubElement(software, "softwareName").text = "WeeklyInvoiceExport"
-    ET.SubElement(software, "softwareOperation").text = "ONLINE_SERVICE"
-    ET.SubElement(software, "softwareMainVersion").text = "1.0"
-    ET.SubElement(software, "softwareDevName").text = "Internal"
-    ET.SubElement(software, "softwareDevContact").text = "noreply@example.com"
+    # --- software (api, elements in common namespace) ---
+    software = ET.SubElement(root, f"{{{NS_API}}}software")
+    ET.SubElement(software, f"{{{NS_COMMON}}}softwareId").text = "CORPOFIN_MULTI_COMPANY_EXPORT"
+    ET.SubElement(software, f"{{{NS_COMMON}}}softwareName").text = "WeeklyInvoiceExport"
+    ET.SubElement(software, f"{{{NS_COMMON}}}softwareOperation").text = "ONLINE_SERVICE"
+    ET.SubElement(software, f"{{{NS_COMMON}}}softwareMainVersion").text = "1.0"
+    ET.SubElement(software, f"{{{NS_COMMON}}}softwareDevName").text = "Corpofin Kft."
+    ET.SubElement(software, f"{{{NS_COMMON}}}softwareDevContact").text = "balazs.dedinszky@corpofin.hu"
+    ET.SubElement(software, f"{{{NS_COMMON}}}softwareDevCountryCode").text = "HU"
 
-    ET.SubElement(root, "page").text = str(page)
-    ET.SubElement(root, "invoiceDirection").text = "OUTBOUND"
+    # --- paging & direction ---
+    ET.SubElement(root, f"{{{NS_API}}}page").text = str(page)
+    ET.SubElement(root, f"{{{NS_API}}}invoiceDirection").text = "INBOUND"
 
-    iq = ET.SubElement(root, "invoiceQueryParams")
-    mandatory = ET.SubElement(iq, "mandatoryQueryParams")
-    iid = ET.SubElement(mandatory, "invoiceIssueDate")
-    ET.SubElement(iid, "dateFrom").text = date_from
-    ET.SubElement(iid, "dateTo").text = date_to
+    # --- query params ---
+    iq = ET.SubElement(root, f"{{{NS_API}}}invoiceQueryParams")
+    mandatory = ET.SubElement(iq, f"{{{NS_API}}}mandatoryQueryParams")
+    iid = ET.SubElement(mandatory, f"{{{NS_API}}}invoiceIssueDate")
+    ET.SubElement(iid, f"{{{NS_API}}}dateFrom").text = date_from
+    ET.SubElement(iid, f"{{{NS_API}}}dateTo").text = date_to
 
     return ET.tostring(root, encoding="utf-8")
+
 
 
 def parse_response(xml_text):
