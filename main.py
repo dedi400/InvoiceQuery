@@ -82,6 +82,44 @@ def validate_company_schema(df):
     if not invalid_active.empty:
         raise ValueError("active column must contain TRUE/FALSE only")
 
+def download_drive_file_as_excel(file_id):
+    """
+    Downloads a Google Drive file and returns a pandas DataFrame.
+    Automatically handles:
+      - Google Sheets (export to xlsx)
+      - Binary Excel files (.xlsx)
+    """
+    service = get_drive_service()
+
+    # Detect file type
+    meta = service.files().get(
+        fileId=file_id,
+        fields="id, name, mimeType"
+    ).execute()
+
+    mime = meta["mimeType"]
+
+    if mime == "application/vnd.google-apps.spreadsheet":
+        request = service.files().export(
+            fileId=file_id,
+            mimeType=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            )
+        )
+    else:
+        request = service.files().get_media(fileId=file_id)
+
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+
+    fh.seek(0)
+    return fh
+
 
 # =========================================================
 # XML builders & parsers
@@ -204,20 +242,14 @@ def get_drive_service():
 
 
 def load_companies_from_drive():
-    service = get_drive_service()
     file_id = os.environ["COMPANY_CONFIG_FILE_ID"]
 
-    request = service.files().get_media(fileId=file_id)
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
+    fh = download_drive_file_as_excel(file_id)
 
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-
-    fh.seek(0)
     df = pd.read_excel(fh, sheet_name="companies")
+
     validate_company_schema(df)
+
     return df[df["active"] == True]
 
 def upsert_company_excel(df_new, filename, folder_id):
@@ -227,7 +259,8 @@ def upsert_company_excel(df_new, filename, folder_id):
 
     if file_id:
         # Existing file → append
-        df_existing = download_excel_from_drive(file_id)
+        fh = download_drive_file_as_excel(file_id)
+        df_existing = pd.read_excel(fh)
         df_final = pd.concat([df_existing, df_new], ignore_index=True)
     else:
         # New file
