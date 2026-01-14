@@ -12,6 +12,57 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from google.auth import default
 
+#Full column list: 
+#OUTPUT_COLUMNS = [
+    # "period_from",
+    # "period_to",
+    # "invoiceNumber",
+    # "invoiceOperation",
+    # "invoiceCategory",
+    # "invoiceIssueDate",
+    # "supplierTaxNumber",
+    # "supplierGroupMemberTaxNumber",
+    # "supplierName",
+    # "customerTaxNumber",
+    # "customerName",
+    # "invoiceAppearance",
+    # "source",
+    # "invoiceDeliveryDate",
+    # "currency",
+    # "transactionId",
+    # "index",
+    # "insDate",
+    # "completenessIndicator",
+    # "paymentMethod",
+    # "paymentDate",
+    # "invoiceNetAmount",
+    # "invoiceNetAmountHUF",
+    # "invoiceVatAmount",
+    # "invoiceVatAmountHUF",
+    # "comment"
+# ]
+
+OUTPUT_COLUMNS = [
+    "invoiceIssueDate",
+    "invoiceNumber",
+    "supplierName",
+    "invoiceDeliveryDate",
+    "paymentDate",
+    "source",
+    "currency",
+    "invoiceNetAmount",
+    "comment"
+]
+
+DATE_COLUMNS = [
+    "invoiceIssueDate",
+    "invoiceDeliveryDate",
+    "paymentDate",
+]
+
+NUMERIC_COLUMNS = [
+    "invoiceNetAmount",
+]
 
 # =========================================================
 # Utilities
@@ -400,6 +451,10 @@ def weekly_invoice_export(request):
 
                 df["period_from"] = period_from
                 df["period_to"] = period_to
+                
+                df = df.reindex(columns=OUTPUT_COLUMNS)
+                df[DATE_COLUMNS] = df[DATE_COLUMNS].apply(pd.to_datetime, errors="coerce")
+                df[NUMERIC_COLUMNS] = df[NUMERIC_COLUMNS].apply(pd.to_numeric, errors="coerce")
 
                 upsert_company_excel(
                     df,
