@@ -219,15 +219,15 @@ def build_query_xml(
         company["nav_signature_key"]
     )
 
-    # --- software (api, elements in common namespace) ---
+    # --- software (api, children ALSO api!) ---
     software = ET.SubElement(root, f"{{{NS_API}}}software")
-    ET.SubElement(software, f"{{{NS_COMMON}}}softwareId").text = "CORPOFIN_MULTI_COMPANY_EXPORT"
-    ET.SubElement(software, f"{{{NS_COMMON}}}softwareName").text = "WeeklyInvoiceExport"
-    ET.SubElement(software, f"{{{NS_COMMON}}}softwareOperation").text = "ONLINE_SERVICE"
-    ET.SubElement(software, f"{{{NS_COMMON}}}softwareMainVersion").text = "1.0"
-    ET.SubElement(software, f"{{{NS_COMMON}}}softwareDevName").text = "Corpofin Kft."
-    ET.SubElement(software, f"{{{NS_COMMON}}}softwareDevContact").text = "balazs.dedinszky@corpofin.hu"
-    ET.SubElement(software, f"{{{NS_COMMON}}}softwareDevCountryCode").text = "HU"
+    ET.SubElement(software, f"{{{NS_API}}}softwareId").text = "CORPOFINCOMPEX0001"
+    ET.SubElement(software, f"{{{NS_API}}}softwareName").text = "WeeklyInvoiceExport"
+    ET.SubElement(software, f"{{{NS_API}}}softwareOperation").text = "ONLINE_SERVICE"
+    ET.SubElement(software, f"{{{NS_API}}}softwareMainVersion").text = "1.0"
+    ET.SubElement(software, f"{{{NS_API}}}softwareDevName").text = "Corpofin Kft."
+    ET.SubElement(software, f"{{{NS_API}}}softwareDevContact").text = "balazs.dedinszky@corpofin.hu"
+    ET.SubElement(software, f"{{{NS_API}}}softwareDevCountryCode").text = "HU"
 
     # --- paging & direction ---
     ET.SubElement(root, f"{{{NS_API}}}page").text = str(page)
@@ -244,16 +244,36 @@ def build_query_xml(
 
 
 
+
 def parse_response(xml_text):
+    NS_API = "http://schemas.nav.gov.hu/OSA/3.0/api"
+
     root = ET.fromstring(xml_text)
-    current_page = int(root.findtext("currentPage", "0"))
-    available_page = int(root.findtext("availablePage", "0"))
+
+    def findtext(parent, tag, default=None):
+        el = parent.find(f"{{{NS_API}}}{tag}")
+        return el.text if el is not None else default
+
+    current_page = int(
+        root.findtext(f".//{{{NS_API}}}currentPage", "1")
+    )
+    available_page = int(
+        root.findtext(f".//{{{NS_API}}}availablePage", "1")
+    )
 
     rows = []
-    for inv in root.findall(".//invoiceDigest"):
-        rows.append({el.tag: el.text for el in inv})
 
+    for inv in root.findall(f".//{{{NS_API}}}invoiceDigest"):
+        row = {}
+        for child in inv:
+            # Strip namespace from tag name
+            tag = child.tag.split("}", 1)[-1]
+            row[tag] = child.text
+        rows.append(row)
+    
+    print("Invoices parsed:", len(rows))
     return rows, current_page, available_page
+
 
 
 def fetch_all_invoices(company, date_from, date_to):
