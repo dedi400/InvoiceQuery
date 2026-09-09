@@ -1,0 +1,27 @@
+# Local environment / deployment configuration
+env.yaml
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Credentials and local company configuration
+*service-account*.json
+*credentials*.json
+*company*list*.xlsx
+*companies*.xlsx
+
+# Generated invoice exports and logs
+*_invoices.xlsx
+*_BACKFILL_*.xlsx
+summary_*.xlsx
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
