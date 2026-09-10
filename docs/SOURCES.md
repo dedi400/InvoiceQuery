@@ -4,7 +4,11 @@ This project integrates with the Hungarian NAV Online Invoice System 3.0 API.
 
 ## Primary reference
 
-Use the current official NAV Online Invoice 3.0 specification and XSD schemas whenever available. The NAV API itself is also authoritative when it returns schema-validation details such as `SCHEMA_VIOLATION` messages.
+The repository contains the latest reviewed English specification:
+
+- [NAV Online Invoice System 3.0 Interface Specification (12 February 2026)](EN_Online%20Invoice%20System%203.0%20Interface%20Specification%20%282026.02.12.%29.pdf)
+
+Use this bundled document as the primary source for NAV behaviour. Its relevant sections for this service are 1.3-1.6 (common request/response structures, authentication, and HTTP), and 1.8.6 (`queryInvoiceDigest`). Consult current official XSD schemas when exact schema details are needed. The NAV API itself is also authoritative when it returns technical validation details such as `SCHEMA_VIOLATION` messages.
 
 ## External reference repository
 
@@ -40,13 +44,16 @@ The current implementation has been validated against live NAV responses for the
 - NAV `SoftwareIdType` requires an 18-character value matching `[0-9A-Z\-]{18}`.
 - NAV responses are namespace-qualified and must be parsed accordingly.
 - `QueryInvoiceDigestResponse/InvoiceDigest` does not include `summaryGrossData`.
+- `InvoiceDigestType` exposes net and VAT totals, but no gross-total field. Consequently the digest export must not expect or derive `invoiceGrossAmount`; obtaining further invoice data requires `queryInvoiceData`.
 - Some `OPG`-source digest records can have blank amount fields; do not fabricate missing monetary values.
+- An HTTP 200 response can still carry `result/funcCode = ERROR`; clients must inspect the business result before parsing rows.
+- Both `Content-Type: application/xml` and `Accept: application/xml` are required request headers.
 
 ## How to resolve conflicts
 
 If sources disagree, use this order:
 
-1. current official NAV XSD/specification,
+1. bundled 12 February 2026 English specification and current official NAV XSDs,
 2. current live NAV validation/error response,
 3. external reference repository,
 4. historical comments or assumptions in this project.

@@ -34,6 +34,8 @@ Do not change these without a specific reason and validation against current NAV
 - Password hash: SHA-512 uppercase hex.
 - Request signature: SHA3-512 uppercase hex over request ID + masked timestamp + signature key, as implemented in `main.py`.
 - NAV schema validation is strict. Preserve namespace placement and element order.
+- Send both `Content-Type: application/xml` and `Accept: application/xml`.
+- HTTP 200 only confirms that NAV could process the request envelope. Always reject a response whose common `result/funcCode` is `ERROR`.
 
 ### Response parsing
 
@@ -43,6 +45,7 @@ Do not change these without a specific reason and validation against current NAV
 - `DATE_COLUMNS` and `NUMERIC_COLUMNS` define pandas/Excel formatting behaviour.
 - Do not assume all monetary fields are populated for all sources. In particular, OPG-sourced digest records may have blank amount fields.
 - `summaryGrossData` is not part of `InvoiceDigest`; do not invent or parse it from `QueryInvoiceDigestResponse` unless the current schema changes.
+- `invoiceGrossAmount` is also not part of `InvoiceDigestType`. Do not derive it from net and VAT amounts; use `queryInvoiceData` if full invoice data becomes a requirement.
 
 ### Multi-company behaviour
 
@@ -64,6 +67,7 @@ Do not change these without a specific reason and validation against current NAV
 
 - `OUTPUT_COLUMNS` is the single common schema for every company.
 - Reindex the DataFrame to that list before export.
+- Preserve user-added columns that follow the queried columns in existing rolling workbooks, including their historical contents; keep them at the rightmost positions and leave them blank on newly appended rows.
 - Convert date columns with `pd.to_datetime(..., errors="coerce")` and numeric columns with `pd.to_numeric(..., errors="coerce")`.
 - Excel formatting currently uses:
   - dates: `yyyy-mm-dd`
@@ -75,7 +79,7 @@ Do not change these without a specific reason and validation against current NAV
 
 Use these sources in this order when changing NAV-specific behaviour:
 
-1. Current official NAV Online Invoice 3.0 schemas/specification, if available.
+1. The bundled English NAV Online Invoice 3.0 specification dated 12 February 2026 (`docs/EN_Online Invoice System 3.0 Interface Specification (2026.02.12.).pdf`) and current official XSDs.
 2. Actual NAV API technical validation/error responses.
 3. Reference material in https://github.com/pzs/nav-online-invoice (partly Hungarian, partly English).
 4. Existing code and comments in this repository.

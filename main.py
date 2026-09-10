@@ -52,7 +52,6 @@ OUTPUT_COLUMNS = [
     "source",
     "currency",
     "invoiceNetAmount",
-    "invoiceGrossAmount",
     "comment"
 ]
 
@@ -64,7 +63,6 @@ DATE_COLUMNS = [
 
 NUMERIC_COLUMNS = [
     "invoiceNetAmount",
-    "invoiceGrossAmount",
 ]
 
 # =========================================================
@@ -72,7 +70,12 @@ NUMERIC_COLUMNS = [
 # =========================================================
 
 def utc_now_iso():
-    return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def masked_timestamp(dt_iso):
@@ -330,18 +333,24 @@ def build_query_xml(
 
 def parse_response(xml_text):
     NS_API = "http://schemas.nav.gov.hu/OSA/3.0/api"
+    NS_COMMON = "http://schemas.nav.gov.hu/NTCA/1.0/common"
 
     root = ET.fromstring(xml_text)
 
-    def findtext(parent, tag, default=None):
-        el = parent.find(f"{{{NS_API}}}{tag}")
-        return el.text if el is not None else default
+    func_code = root.findtext(f".//{{{NS_COMMON}}}funcCode")
+    if func_code == "ERROR":
+        error_code = root.findtext(
+            f".//{{{NS_COMMON}}}errorCode", "UNKNOWN_ERROR"
+        )
+        message = root.findtext(f".//{{{NS_COMMON}}}message", "")
+        details = f": {message}" if message else ""
+        raise ValueError(f"NAV API {error_code}{details}")
 
     current_page = int(
-        root.findtext(f".//{{{NS_API}}}currentPage", "1")
+        root.findtext(f".//{{{NS_API}}}currentPage", "0")
     )
     available_page = int(
-        root.findtext(f".//{{{NS_API}}}availablePage", "1")
+        root.findtext(f".//{{{NS_API}}}availablePage", "0")
     )
 
     rows = []
@@ -381,9 +390,12 @@ def fetch_all_invoices(company, date_from, date_to):
         last_request_xml = xml.decode("utf-8")
 
         resp = requests.post(
-            f"{company['nav_base_url']}/queryInvoiceDigest",
+            f"{company['nav_base_url'].rstrip('/')}/queryInvoiceDigest",
             data=xml,
-            headers={"Content-Type": "application/xml"},
+            headers={
+                "Content-Type": "application/xml",
+                "Accept": "application/xml",
+            },
             timeout=30
         )
 
@@ -396,7 +408,14 @@ def fetch_all_invoices(company, date_from, date_to):
                 last_response_text
             )
 
-        rows, current_page, available_page = parse_response(resp.text)
+        try:
+            rows, current_page, available_page = parse_response(resp.text)
+        except (ET.ParseError, ValueError) as error:
+            raise RuntimeError(
+                str(error),
+                last_request_xml,
+                last_response_text
+            ) from error
         all_rows.extend(rows)
 
         if current_page >= available_page:
@@ -432,28 +451,28 @@ def upsert_company_excel(df_new, company_code, folder_id):
         fh = drive.download_as_excel_stream(existing_id)
         df_existing = pd.read_excel(fh)
 
-        # Retain the workbook's schema, including columns added manually by its
-        # users. Required output columns introduced after the workbook was
-        # created are added without disturbing that existing column order.
-        columns = list(df_existing.columns)
-        if (
-            "invoiceGrossAmount" not in columns
-            and "invoiceNetAmount" in columns
-        ):
-            net_amount_index = columns.index("invoiceNetAmount")
-            columns.insert(net_amount_index + 1, "invoiceGrossAmount")
+        # Users may add their own columns after the queried output columns.
+        # Preserve only that rightmost suffix so obsolete/non-NAV columns mixed
+        # into the managed schema do not become part of the export contract.
+        existing_columns = list(df_existing.columns)
+        queried_positions = [
+            existing_columns.index(column)
+            for column in OUTPUT_COLUMNS
+            if column in existing_columns
+        ]
+        last_queried_position = max(queried_positions, default=-1)
+        user_columns = [
+            column
+            for column in existing_columns[last_queried_position + 1:]
+            if column not in OUTPUT_COLUMNS
+        ]
+        workbook_columns = OUTPUT_COLUMNS + user_columns
 
-        columns.extend(column for column in OUTPUT_COLUMNS if column not in columns)
-
-        df_existing = df_existing.reindex(columns=columns)
-        df_new = df_new.reindex(columns=columns)
+        df_existing = df_existing.reindex(columns=workbook_columns)
+        df_new = df_new.reindex(columns=workbook_columns)
         df_final = pd.concat([df_existing, df_new], ignore_index=True)
     else:
         df_final = df_new.reindex(columns=OUTPUT_COLUMNS)
-
-    # Keep the shared output schema and its ordering when upgrading an existing
-    # rolling workbook. Newly introduced columns remain blank on historical rows.
-    df_final = df_final.reindex(columns=OUTPUT_COLUMNS)
 
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, filename)
