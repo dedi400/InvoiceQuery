@@ -96,9 +96,7 @@ def write_excel_with_autowidth(df, path, sheet_name="Sheet1", max_width=60):
 
         # ---- auto column widths ----
         for idx, col in enumerate(df.columns, start=1):
-            series = df[col].map(
-                lambda value: "" if pd.isna(value) else str(value)
-            )
+            series = df[col].fillna("").astype(str)
             max_len = max(series.map(len).max(), len(col))
             ws.column_dimensions[get_column_letter(idx)].width = min(
                 max_len + 2,
@@ -452,6 +450,10 @@ def upsert_company_excel(df_new, company_code, folder_id):
         df_final = pd.concat([df_existing, df_new], ignore_index=True)
     else:
         df_final = df_new.reindex(columns=OUTPUT_COLUMNS)
+
+    # Keep the shared output schema and its ordering when upgrading an existing
+    # rolling workbook. Newly introduced columns remain blank on historical rows.
+    df_final = df_final.reindex(columns=OUTPUT_COLUMNS)
 
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, filename)
