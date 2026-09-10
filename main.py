@@ -88,6 +88,20 @@ def request_signature(request_id, timestamp, signature_key):
     base = request_id + masked_timestamp(timestamp) + signature_key
     return hashlib.sha3_512(base.encode()).hexdigest().upper()
 
+
+def add_invoice_gross_amount(df):
+    """Derive gross amounts from the net and VAT values supplied by NAV."""
+    df = df.copy()
+    empty = pd.Series(index=df.index, dtype="object")
+    net_amount = pd.to_numeric(
+        df.get("invoiceNetAmount", empty), errors="coerce"
+    )
+    vat_amount = pd.to_numeric(
+        df.get("invoiceVatAmount", empty), errors="coerce"
+    )
+    df["invoiceGrossAmount"] = net_amount + vat_amount
+    return df
+
 def write_excel_with_autowidth(df, path, sheet_name="Sheet1", max_width=60):
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name=sheet_name)
@@ -451,10 +465,6 @@ def upsert_company_excel(df_new, company_code, folder_id):
     else:
         df_final = df_new.reindex(columns=OUTPUT_COLUMNS)
 
-    # Keep the shared output schema and its ordering when upgrading an existing
-    # rolling workbook. Newly introduced columns remain blank on historical rows.
-    df_final = df_final.reindex(columns=OUTPUT_COLUMNS)
-
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, filename)
         write_excel_with_autowidth(df_final, path)
@@ -503,7 +513,8 @@ def weekly_invoice_export(request):
 
                 df["period_from"] = period_from
                 df["period_to"] = period_to
-                
+
+                df = add_invoice_gross_amount(df)
                 df = df.reindex(columns=OUTPUT_COLUMNS)
                 df[DATE_COLUMNS] = df[DATE_COLUMNS].apply(pd.to_datetime, errors="coerce")
                 df[NUMERIC_COLUMNS] = df[NUMERIC_COLUMNS].apply(pd.to_numeric, errors="coerce")

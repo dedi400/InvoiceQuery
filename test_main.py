@@ -66,5 +66,24 @@ class UpsertCompanyExcelTest(unittest.TestCase):
         self.assertTrue(pd.isna(result.loc[1, "Notes"]))
 
 
+class AddInvoiceGrossAmountTest(unittest.TestCase):
+    def test_calculates_gross_from_nav_net_and_vat_amounts(self):
+        invoices = pd.DataFrame({
+            "invoiceNetAmount": ["2000", "100.50", None],
+            "invoiceVatAmount": ["540", "27.25", "10"],
+        })
+
+        result = main.add_invoice_gross_amount(invoices)
+
+        self.assertEqual(result.loc[0, "invoiceGrossAmount"], 2540)
+        self.assertEqual(result.loc[1, "invoiceGrossAmount"], 127.75)
+        self.assertTrue(pd.isna(result.loc[2, "invoiceGrossAmount"]))
+
+    def test_missing_amount_fields_produce_blank_gross_amounts(self):
+        result = main.add_invoice_gross_amount(pd.DataFrame(index=[0]))
+
+        self.assertTrue(pd.isna(result.loc[0, "invoiceGrossAmount"]))
+
+
 if __name__ == "__main__":
     unittest.main()
