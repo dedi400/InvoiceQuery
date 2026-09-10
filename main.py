@@ -431,9 +431,25 @@ def upsert_company_excel(df_new, company_code, folder_id):
     if existing_id:
         fh = drive.download_as_excel_stream(existing_id)
         df_existing = pd.read_excel(fh)
+
+        # Retain the workbook's schema, including columns added manually by its
+        # users. Required output columns introduced after the workbook was
+        # created are added without disturbing that existing column order.
+        columns = list(df_existing.columns)
+        if (
+            "invoiceGrossAmount" not in columns
+            and "invoiceNetAmount" in columns
+        ):
+            net_amount_index = columns.index("invoiceNetAmount")
+            columns.insert(net_amount_index + 1, "invoiceGrossAmount")
+
+        columns.extend(column for column in OUTPUT_COLUMNS if column not in columns)
+
+        df_existing = df_existing.reindex(columns=columns)
+        df_new = df_new.reindex(columns=columns)
         df_final = pd.concat([df_existing, df_new], ignore_index=True)
     else:
-        df_final = df_new
+        df_final = df_new.reindex(columns=OUTPUT_COLUMNS)
 
     # Keep the shared output schema and its ordering when upgrading an existing
     # rolling workbook. Newly introduced columns remain blank on historical rows.
