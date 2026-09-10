@@ -52,6 +52,7 @@ OUTPUT_COLUMNS = [
     "source",
     "currency",
     "invoiceNetAmount",
+    "invoiceGrossAmount",
     "comment"
 ]
 
@@ -63,6 +64,7 @@ DATE_COLUMNS = [
 
 NUMERIC_COLUMNS = [
     "invoiceNetAmount",
+    "invoiceGrossAmount",
 ]
 
 # =========================================================
@@ -94,7 +96,9 @@ def write_excel_with_autowidth(df, path, sheet_name="Sheet1", max_width=60):
 
         # ---- auto column widths ----
         for idx, col in enumerate(df.columns, start=1):
-            series = df[col].astype(str)
+            series = df[col].map(
+                lambda value: "" if pd.isna(value) else str(value)
+            )
             max_len = max(series.map(len).max(), len(col))
             ws.column_dimensions[get_column_letter(idx)].width = min(
                 max_len + 2,
@@ -429,9 +433,25 @@ def upsert_company_excel(df_new, company_code, folder_id):
     if existing_id:
         fh = drive.download_as_excel_stream(existing_id)
         df_existing = pd.read_excel(fh)
+
+        # Retain the workbook's schema, including columns added manually by its
+        # users. Required output columns introduced after the workbook was
+        # created are added without disturbing that existing column order.
+        columns = list(df_existing.columns)
+        if (
+            "invoiceGrossAmount" not in columns
+            and "invoiceNetAmount" in columns
+        ):
+            net_amount_index = columns.index("invoiceNetAmount")
+            columns.insert(net_amount_index + 1, "invoiceGrossAmount")
+
+        columns.extend(column for column in OUTPUT_COLUMNS if column not in columns)
+
+        df_existing = df_existing.reindex(columns=columns)
+        df_new = df_new.reindex(columns=columns)
         df_final = pd.concat([df_existing, df_new], ignore_index=True)
     else:
-        df_final = df_new
+        df_final = df_new.reindex(columns=OUTPUT_COLUMNS)
 
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, filename)
