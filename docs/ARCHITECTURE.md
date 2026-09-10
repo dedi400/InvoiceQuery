@@ -63,8 +63,8 @@ For each active company:
 3. Build a NAV 3.0 `QueryInvoiceDigestRequest`.
 4. Query `invoiceDirection = INBOUND` for the weekly `invoiceIssueDate` interval.
 5. POST to `{nav_base_url}/queryInvoiceDigest`.
-6. On non-200 response, retain the request XML and response body for the summary log.
-7. Parse `currentPage`, `availablePage` and each namespace-qualified `invoiceDigest`.
+6. Reject HTTP failures and HTTP 200 responses whose common `result/funcCode` is `ERROR`, retaining the request XML and response body for the summary log.
+7. Parse `currentPage`, `availablePage` and each namespace-qualified `invoiceDigest` only after the business result succeeds.
 8. Continue until the last available page.
 9. Return a pandas DataFrame.
 
@@ -101,9 +101,10 @@ The service:
 
 1. finds the file in the company's target Shared Drive folder,
 2. downloads it if it exists,
-3. concatenates old and new rows,
-4. rewrites the local `.xlsx`, and
-5. updates the same Drive file (or creates it on first run).
+3. retains user-added columns found to the right of the queried columns,
+4. concatenates old and new rows, leaving those user columns blank on new rows,
+5. rewrites the local `.xlsx`, and
+6. updates the same Drive file (or creates it on first run).
 
 Current Excel presentation:
 
@@ -147,4 +148,4 @@ Job-level failures such as inability to load the configuration workbook still ap
 
 ## Known data limitation
 
-`InvoiceDigest` is intentionally a digest, not the full invoice payload. Some monetary fields may be blank for invoices whose `source` is `OPG`. `summaryGrossData` is not part of `InvoiceDigest`, so the digest process should not attempt to synthesize gross values that NAV did not return.
+`InvoiceDigest` is intentionally a digest, not the full invoice payload. Some monetary fields may be blank for invoices whose `source` is `OPG`. Neither `summaryGrossData` nor `invoiceGrossAmount` is part of `InvoiceDigestType`, so the digest process does not export or synthesize a gross total. A future requirement for data outside the digest must use `queryInvoiceData` and account for its full response model.

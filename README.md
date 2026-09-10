@@ -9,10 +9,11 @@ The service is designed to run weekly in Google Cloud. It reads company-specific
 - Queries `QueryInvoiceDigestRequest` with `invoiceDirection = INBOUND`.
 - Uses `invoiceIssueDate` with the previous complete Monday-Sunday interval.
 - Retrieves every available result page.
+- Treats NAV business errors as failures even when the HTTP status is 200.
 - Reads multiple company configurations from one Drive-hosted workbook.
 - Uses Shared Drive-aware Google Drive API calls.
 - Appends new rows to one rolling Excel workbook per company.
-- Output columns are controlled centrally by `OUTPUT_COLUMNS` in `main.py`.
+- Queried output columns are controlled centrally by `OUTPUT_COLUMNS` in `main.py`; rightmost user-added workbook columns and their existing contents are preserved during updates.
 - Date and numeric columns are converted to proper pandas types and formatted in Excel.
 - NAV request XML and NAV error response are included in the summary log when a company fails.
 - A failure for one company does not stop processing the remaining companies.
@@ -25,6 +26,7 @@ The service is designed to run weekly in Google Cloud. It reads company-specific
 - `AGENTS.md` - project instructions and invariants for Codex and other coding agents.
 - `docs/ARCHITECTURE.md` - data flow, configuration schema, NAV/Drive implementation notes and operational behaviour.
 - `docs/SOURCES.md` - NAV API reference material and external examples.
+- `docs/SPEC_REVIEW.md` - results of the project audit against the bundled 12 February 2026 specification.
 
 ## Required environment variables
 
@@ -99,7 +101,7 @@ See `.gitignore` and use `env.example.yaml` as the template.
 
 ## NAV API reference material
 
-The external repository below contains NAV Online Invoice examples, schemas/documentation and implementation material. It is partly English and partly Hungarian:
+The primary reference is the bundled [NAV Online Invoice System 3.0 Interface Specification dated 12 February 2026](docs/EN_Online%20Invoice%20System%203.0%20Interface%20Specification%20%282026.02.12.%29.pdf). The external repository below remains a secondary source of examples and implementation material; it is partly English and partly Hungarian:
 
 - https://github.com/pzs/nav-online-invoice
 
