@@ -101,6 +101,26 @@ class NavApiTest(unittest.TestCase):
 
 
 class UpsertCompanyExcelTest(unittest.TestCase):
+    def test_calculated_gross_amount_requires_net_and_vat(self):
+        invoices = pd.DataFrame({
+            "invoiceNetAmount": ["1000", "2000", None, "not-a-number"],
+            "invoiceVatAmount": ["270", None, "300", "100"],
+        })
+
+        result = main.add_calculated_amounts(invoices)
+
+        self.assertEqual(result.loc[0, "invoiceGrossAmount"], 1270)
+        self.assertTrue(pd.isna(result.loc[1, "invoiceGrossAmount"]))
+        self.assertTrue(pd.isna(result.loc[2, "invoiceGrossAmount"]))
+        self.assertTrue(pd.isna(result.loc[3, "invoiceGrossAmount"]))
+
+    def test_calculated_gross_amount_is_blank_when_digest_amounts_are_absent(self):
+        invoices = pd.DataFrame({"invoiceNumber": ["OPG-1"]})
+
+        result = main.add_calculated_amounts(invoices)
+
+        self.assertTrue(pd.isna(result.loc[0, "invoiceGrossAmount"]))
+
     def test_existing_workbook_retains_rightmost_user_columns(self):
         existing = pd.DataFrame({
             "invoiceIssueDate": ["2026-08-01"],
@@ -111,8 +131,6 @@ class UpsertCompanyExcelTest(unittest.TestCase):
             "source": ["XML"],
             "currency": ["HUF"],
             "invoiceNetAmount": [1000],
-            # This obsolete managed column is not a rightmost user column.
-            "invoiceGrossAmount": [1270],
             "comment": ["historical"],
             "Reviewed": [True],
             "Notes": ["Already reconciled"],
@@ -142,7 +160,8 @@ class UpsertCompanyExcelTest(unittest.TestCase):
             list(result.columns),
             main.OUTPUT_COLUMNS + ["Reviewed", "Notes"],
         )
-        self.assertNotIn("invoiceGrossAmount", result.columns)
+        self.assertTrue(pd.isna(result.loc[0, "invoiceGrossAmount"]))
+        self.assertTrue(pd.isna(result.loc[1, "invoiceGrossAmount"]))
         self.assertTrue(result.loc[0, "Reviewed"])
         self.assertEqual(result.loc[0, "Notes"], "Already reconciled")
         self.assertTrue(pd.isna(result.loc[1, "Reviewed"]))

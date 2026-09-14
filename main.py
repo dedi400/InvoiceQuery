@@ -52,6 +52,7 @@ OUTPUT_COLUMNS = [
     "source",
     "currency",
     "invoiceNetAmount",
+    "invoiceGrossAmount",
     "comment"
 ]
 
@@ -63,6 +64,7 @@ DATE_COLUMNS = [
 
 NUMERIC_COLUMNS = [
     "invoiceNetAmount",
+    "invoiceGrossAmount",
 ]
 
 # =========================================================
@@ -367,6 +369,20 @@ def parse_response(xml_text):
     return rows, current_page, available_page
 
 
+def add_calculated_amounts(df):
+    """Add output amounts that are not provided directly by invoice digest."""
+    net_amount = pd.to_numeric(
+        df.get("invoiceNetAmount", pd.Series(index=df.index, dtype="float64")),
+        errors="coerce",
+    )
+    vat_amount = pd.to_numeric(
+        df.get("invoiceVatAmount", pd.Series(index=df.index, dtype="float64")),
+        errors="coerce",
+    )
+    df["invoiceGrossAmount"] = net_amount + vat_amount
+    return df
+
+
 
 def fetch_all_invoices(company, date_from, date_to):
     all_rows = []
@@ -522,7 +538,10 @@ def weekly_invoice_export(request):
 
                 df["period_from"] = period_from
                 df["period_to"] = period_to
-                
+
+                # InvoiceDigest has no gross amount field. Calculate it only
+                # when both the net and VAT amounts are available.
+                df = add_calculated_amounts(df)
                 df = df.reindex(columns=OUTPUT_COLUMNS)
                 df[DATE_COLUMNS] = df[DATE_COLUMNS].apply(pd.to_datetime, errors="coerce")
                 df[NUMERIC_COLUMNS] = df[NUMERIC_COLUMNS].apply(pd.to_numeric, errors="coerce")
