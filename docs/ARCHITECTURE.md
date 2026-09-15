@@ -148,4 +148,8 @@ Job-level failures such as inability to load the configuration workbook still ap
 
 ## Known data limitation
 
-`InvoiceDigest` is intentionally a digest, not the full invoice payload. Some monetary fields may be blank for invoices whose `source` is `OPG`. Neither `summaryGrossData` nor `invoiceGrossAmount` is part of `InvoiceDigestType`, so the digest process does not export or synthesize a gross total. A future requirement for data outside the digest must use `queryInvoiceData` and account for its full response model.
+`InvoiceDigest` is intentionally a digest, not the full invoice payload. Some monetary fields may be blank for invoices whose `source` is `OPG`. Neither `summaryGrossData` nor `invoiceGrossAmount` is part of `InvoiceDigestType`.
+
+The export intentionally adds `invoiceGrossAmount` through `add_calculated_amounts`, before selecting `OUTPUT_COLUMNS`. It sums `invoiceNetAmount` and `invoiceVatAmount`, both in the invoice currency, after numeric coercion. Missing or invalid inputs leave gross blank; zero and negative values retain their arithmetic meaning. The `*HUF` amounts are not used. The existing column name is retained for workbook compatibility, and historical rows without gross are not backfilled by this change.
+
+This is a calculated export value, not a retrieved gross total or a reconciled payable balance. It is not guaranteed to match the reported invoice gross: the bundled specification's warning 880 explicitly checks for differences between reported gross and net plus VAT. A requirement to retrieve the reported gross or other full invoice data must use `queryInvoiceData` and account for its full response model.

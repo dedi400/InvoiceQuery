@@ -15,6 +15,7 @@ The service is designed to run weekly in Google Cloud. It reads company-specific
 - Appends new rows to one rolling Excel workbook per company.
 - Queried output columns are controlled centrally by `OUTPUT_COLUMNS` in `main.py`; rightmost user-added workbook columns and their existing contents are preserved during updates.
 - Date and numeric columns are converted to proper pandas types and formatted in Excel.
+- `invoiceGrossAmount` is calculated as net plus VAT in the invoice currency when both amounts are numeric; otherwise it stays blank. It is not a gross total returned by NAV's digest API and is not guaranteed to match the reported invoice total.
 - NAV request XML and NAV error response are included in the summary log when a company fails.
 - A failure for one company does not stop processing the remaining companies.
 
@@ -72,10 +73,15 @@ Create a virtual environment and install dependencies:
 python -m venv .venv
 # Windows: .venv\Scripts\activate
 # macOS/Linux: source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
 For local calls that access Google Drive, configure Google Application Default Credentials and ensure the authenticated identity has access to the Shared Drive resources.
+
+Run offline tests with `.venv\Scripts\python.exe -m unittest discover -v` on Windows.
+Use `check_local.py` for opt-in, read-only Google/NAV checks using
+`COMPANY_TEST_CONFIG_FILE_ID` from your local `env.yaml`. See
+[Local testing and authentication](docs/LOCAL_TESTING.md) for setup, commands and debugging.
 
 ## Google Cloud
 

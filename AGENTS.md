@@ -45,7 +45,10 @@ Do not change these without a specific reason and validation against current NAV
 - `DATE_COLUMNS` and `NUMERIC_COLUMNS` define pandas/Excel formatting behaviour.
 - Do not assume all monetary fields are populated for all sources. In particular, OPG-sourced digest records may have blank amount fields.
 - `summaryGrossData` is not part of `InvoiceDigest`; do not invent or parse it from `QueryInvoiceDigestResponse` unless the current schema changes.
-- `invoiceGrossAmount` is also not part of `InvoiceDigestType`. Do not derive it from net and VAT amounts; use `queryInvoiceData` if full invoice data becomes a requirement.
+- `invoiceGrossAmount` is not part of `InvoiceDigestType`; do not expect it in the digest XML. It is an intentional calculated export column, added in commit `4e2672c` (PR #5).
+- Preserve `add_calculated_amounts`: calculate `invoiceGrossAmount = invoiceNetAmount + invoiceVatAmount` before reindexing to `OUTPUT_COLUMNS`. Both inputs are in the invoice currency; do not mix them with the `*HUF` fields.
+- Convert both inputs with `pd.to_numeric(..., errors="coerce")`. If either is missing or invalid, leave gross blank; never replace missing VAT with zero. Preserve valid zero and negative amounts.
+- Describe exported gross as calculated, not as a gross total returned by NAV. Keep the existing column name for workbook compatibility. Retrieving the reported gross total or other full invoice data requires `queryInvoiceData`; the calculated value is not guaranteed to equal that reported total.
 
 ### Multi-company behaviour
 
@@ -103,6 +106,10 @@ Never commit:
 Do not print secrets in normal logs. Request XML may contain a hashed password and request signature; treat diagnostic logs as sensitive operational data even though they do not contain the clear-text password/signature key.
 
 ## Change style
+
+- Run offline tests with `.venv\Scripts\python.exe -m unittest discover -v` after installing `requirements-dev.txt`.
+- For opt-in live diagnostics, use `check_local.py` with `COMPANY_TEST_CONFIG_FILE_ID`; never silently fall back to the production workbook. The checker is read-only, including summary-folder checks. See `docs/LOCAL_TESTING.md`.
+- Do not treat the test configuration ID as proof that every configured folder is isolated from production. Verify destinations before adding live write tests. Keep signed XML and workbook credentials out of test output.
 
 - Prefer small, readable changes over frameworks or unnecessary abstractions.
 - Keep the weekly job deterministic.

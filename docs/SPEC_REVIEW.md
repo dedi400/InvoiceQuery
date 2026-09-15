@@ -15,10 +15,24 @@ The project was reviewed against the bundled English **NAV Online Invoice System
 | Digest query | Page is at least 1, direction is `INBOUND`, and exactly one mandatory query branch is selected | Existing request selects `invoiceIssueDate/dateFrom` and `dateTo`, and weekly intervals are safely below the 35-day maximum. |
 | Pagination | The server controls page size and sorting; `currentPage` and `availablePage` start at 0 when there are no results | Existing loop retrieves all pages. Response defaults now model the documented no-result values rather than inventing page 1. |
 | Business errors | HTTP 200 can contain `result/funcCode=ERROR` | Fixed: business errors are now rejected and their request/response XML reaches the per-company summary log. |
-| Digest fields | `InvoiceDigestType` provides net and VAT amounts, but no gross total | Removed `invoiceGrossAmount`, which could never be populated by this operation. Gross data must not be inferred; full data would require `/queryInvoiceData`. |
+| Digest fields | `InvoiceDigestType` provides optional net and VAT amounts in the invoice currency, but no gross total | The export intentionally calculates `invoiceGrossAmount` as net plus VAT when both are numeric (PR #5). This is a project-derived value, not a NAV digest field; retrieving reported gross requires `/queryInvoiceData`. |
 | Optional values | Many digest fields, including monetary values, are optional | Existing coercion to blank/`NaN` is retained. No missing amount is fabricated. |
 | Output schema | This service intentionally exports a selected common subset | Queried data is consistently reindexed to `OUTPUT_COLUMNS`. User-added columns at the right of an existing workbook are retained with their historical contents and remain blank on newly appended rows. Obsolete fields mixed into the managed queried columns are removed. |
 | Drive and company isolation | Project-specific behaviour, outside the NAV interface specification | Reviewed and retained: Shared Drive flags, native Sheet/binary Excel reads, rolling file updates, and per-company exception isolation remain intact. |
+
+## Gross amount follow-up review (15 September 2026)
+
+- `455b46b` (PR #1) added the gross output column without a calculation, so digest responses could not populate it.
+- `548af37` (PR #4) removed that column and introduced the instruction against deriving gross.
+- `4e2672c` (PR #5, merged as `9f68402`) deliberately restored the column with `add_calculated_amounts` and tests for missing/invalid amounts, but left the earlier documentation unchanged.
+
+The bundled specification, section 1.8.6.2 (printed pages 53-56), and the [official API XSD](https://github.com/nav-gov-hu/Online-Invoice/blob/master/src/schemas/nav/gov/hu/OSA/invoiceApi.xsd) reviewed on this date agree that the digest includes optional net and VAT amounts, both in the invoice currency, but no gross-total field. Absence from the response schema does not prohibit a project-calculated export column. The former blanket prohibition was a project restriction, not a NAV schema requirement, and is superseded by PR #5.
+
+Keep the existing calculation and column name. Coerce both inputs to numeric, leave gross blank when either is missing or invalid, and do not substitute zero or mix invoice-currency amounts with HUF amounts. Calculate before selecting the output columns, because VAT is an intermediate input. Historical rows without gross remain blank.
+
+Do not describe the calculation as the reported invoice gross or a reconciled payable balance. Warning 880 in the bundled specification (printed page 335) checks differences between reported gross and net plus VAT; equality is not guaranteed. Retrieving reported gross requires the full invoice response through `queryInvoiceData`.
+
+Validation: the existing six unit tests passed on the local Python 3.14 environment, including calculation and blank-value tests. This follow-up changes documentation only; it does not validate live invoice totals.
 
 ## Deliberately unchanged
 
