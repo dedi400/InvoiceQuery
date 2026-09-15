@@ -48,6 +48,7 @@ The current implementation has been validated against live NAV responses for the
 - `QueryInvoiceDigestResponse/InvoiceDigest` does not include `summaryGrossData`.
 - `InvoiceDigestType` exposes optional net and VAT totals, but no gross-total field. Separately, project commit `4e2672c` (PR #5) intentionally adds the calculated export column `invoiceGrossAmount` as net plus VAT when both are numeric. This project choice does not add a field to the NAV schema. Obtaining the reported gross total or further invoice data requires `queryInvoiceData`.
 - Some `OPG`-source digest records can have blank amount fields; do not fabricate missing monetary values.
+- OPG fallback: bundled specification section 1.8.5 and Annex IV (printed pages 384, 390, 394-396), plus [invoiceData.xsd](https://github.com/nav-gov-hu/Online-Invoice/blob/master/src/schemas/nav/gov/hu/OSA/invoiceData.xsd), reviewed 15 September 2026. Full OPG invoices contain simplified summary groups with gross and VAT-content/exemption/scope information. The export derives missing net/VAT from those groups; see [the calculation contract](ARCHITECTURE.md#opg-amount-retrieval).
 - An HTTP 200 response can still carry `result/funcCode = ERROR`; clients must inspect the business result before parsing rows.
 - Both `Content-Type: application/xml` and `Accept: application/xml` are required request headers.
 

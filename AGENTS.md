@@ -44,6 +44,7 @@ Do not change these without a specific reason and validation against current NAV
 - Output is intentionally limited to fields listed in global `OUTPUT_COLUMNS`.
 - `DATE_COLUMNS` and `NUMERIC_COLUMNS` define pandas/Excel formatting behaviour.
 - Do not assume all monetary fields are populated for all sources. In particular, OPG-sourced digest records may have blank amount fields.
+- After digest pagination, enrich missing OPG net/VAT amounts using `queryInvoiceData` and simplified summary groups. Preserve invoice/supplier/currency checks, BASE64/GZIP support and per-company failure diagnostics. See `docs/ARCHITECTURE.md#opg-amount-retrieval` for the calculation and rounding contract; do not treat missing VAT treatment as exemption.
 - `summaryGrossData` is not part of `InvoiceDigest`; do not invent or parse it from `QueryInvoiceDigestResponse` unless the current schema changes.
 - `invoiceGrossAmount` is not part of `InvoiceDigestType`; do not expect it in the digest XML. It is an intentional calculated export column, added in commit `4e2672c` (PR #5).
 - Preserve `add_calculated_amounts`: calculate `invoiceGrossAmount = invoiceNetAmount + invoiceVatAmount` before reindexing to `OUTPUT_COLUMNS`. Both inputs are in the invoice currency; do not mix them with the `*HUF` fields.

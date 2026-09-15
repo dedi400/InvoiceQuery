@@ -9,6 +9,7 @@ The service is designed to run weekly in Google Cloud. It reads company-specific
 - Queries `QueryInvoiceDigestRequest` with `invoiceDirection = INBOUND`.
 - Uses `invoiceIssueDate` with the previous complete Monday-Sunday interval.
 - Retrieves every available result page.
+- Retrieves full invoice data for OPG rows missing net or VAT amounts and calculates them from simplified summary groups. See [OPG amount retrieval](docs/ARCHITECTURE.md#opg-amount-retrieval) for calculation and failure behaviour.
 - Treats NAV business errors as failures even when the HTTP status is 200.
 - Reads multiple company configurations from one Drive-hosted workbook.
 - Uses Shared Drive-aware Google Drive API calls.

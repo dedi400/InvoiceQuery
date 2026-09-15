@@ -34,9 +34,17 @@ Do not describe the calculation as the reported invoice gross or a reconciled pa
 
 Validation: the existing six unit tests passed on the local Python 3.14 environment, including calculation and blank-value tests. This follow-up changes documentation only; it does not validate live invoice totals.
 
+## OPG amount implementation (15 September 2026)
+
+The requested OPG fallback supersedes the earlier digest-only scope. Reviewed the bundled specification sections 1.8.5 (printed pages 36-42), 1.6.5 (GZIP handling, printed page 17), and Annex IV: OPG uses single SIMPLIFIED invoices (printed pages 384, 390) and summary groups containing VAT content, exemption or out-of-scope markers (printed pages 394-396). Checked the current official `invoiceApi.xsd` (`InvoiceNumberQueryType`, `InvoiceDataResultType`) and `invoiceData.xsd` (`SummarySimplifiedType`, `VatRateType`).
+
+The implementation retrieves missing OPG amounts and derives net/VAT from invoice-currency simplified summaries. Gross remains calculated by the existing export function. See [architecture](ARCHITECTURE.md#opg-amount-retrieval) for rounding, failure policy and request cost. All 34 offline tests pass, covering request structure, pagination, selective retrieval, mixed collectors, zero/negative amounts, BASE64/GZIP, identity checks and per-company failure isolation.
+
+An explicitly authorized live run using the test configuration retrieved the previous week's invoices, populated OPG net and calculated gross, and appended to the existing workbook. Download verification confirmed that historical rows were retained. No user-added columns were present in that workbook, so their preservation was verified only by the offline regression test. The test destination matched a production destination; the operator explicitly approved the append after that overlap was identified. Operational backups, exports and verification logs remain outside version control. This check did not reconcile calculated net against original invoice documents.
+
 ## Deliberately unchanged
 
-- The service remains a digest query. It does not add `/queryInvoiceData`, because that would materially expand network traffic, response parsing, and data handling.
+- Non-OPG invoices continue to use digest amounts only.
 - The selected output does not add every available digest field. `OUTPUT_COLUMNS` intentionally defines the common business export.
 - The 30-second client timeout is retained. It exceeds NAV's typical synchronous response time while remaining below the broader job timeout concerns.
 - No dependency was added for runtime XSD validation. NAV-specific XML structure is covered by focused unit tests, while live technical validation responses remain captured for diagnosis.

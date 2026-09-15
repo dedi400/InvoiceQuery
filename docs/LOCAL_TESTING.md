@@ -65,7 +65,7 @@ Reference: [Google's local ADC setup](https://docs.cloud.google.com/docs/authent
 # Validate configuration, Google authentication, workbook schema and folder capabilities:
 .\.venv\Scripts\python.exe check_local.py
 
-# Also query yesterday's NAV digests for each active test company:
+# Also query yesterday's NAV digests and missing OPG amounts for each active test company:
 .\.venv\Scripts\python.exe check_local.py --nav
 ```
 
@@ -77,7 +77,9 @@ an update of an existing file will succeed.
 
 `--nav` contacts the official NAV endpoint specified by each test company's
 `nav_base_url`, which may be production NAV even when output folders are for testing.
-It queries one day, retrieves every returned page, and reports only counts. It does
+It queries one day, retrieves every returned page, and retrieves full invoice data
+for OPG rows missing net/VAT amounts through the same fallback as production.
+It reports only counts. It does
 not save invoice contents or signed XML. An empty successful result verifies access
 but does not validate actual invoice amount values. NAV company failures are isolated.
 

@@ -1,9 +1,14 @@
 import io
+import base64
+import binascii
+import gzip
+import zlib
 import os
 import uuid
 import hashlib
 import datetime
 import tempfile
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import requests
 from openpyxl.utils import get_column_letter
 import pandas as pd
@@ -259,21 +264,14 @@ class DriveClient:
 # NAV XML & API
 # =========================================================
 
-def build_query_xml(
-    request_id,
-    timestamp,
-    company,
-    page,
-    date_from,
-    date_to
-):
+def build_request_root(request_id, timestamp, company, request_type):
     NS_API = "http://schemas.nav.gov.hu/OSA/3.0/api"
     NS_COMMON = "http://schemas.nav.gov.hu/NTCA/1.0/common"
 
     ET.register_namespace("", NS_API)
     ET.register_namespace("common", NS_COMMON)
 
-    root = ET.Element(f"{{{NS_API}}}QueryInvoiceDigestRequest")
+    root = ET.Element(f"{{{NS_API}}}{request_type}")
 
     # --- header (common) ---
     header = ET.SubElement(root, f"{{{NS_COMMON}}}header")
@@ -317,6 +315,15 @@ def build_query_xml(
     ET.SubElement(software, f"{{{NS_API}}}softwareDevContact").text = "balazs.dedinszky@corpofin.hu"
     ET.SubElement(software, f"{{{NS_API}}}softwareDevCountryCode").text = "HU"
 
+    return root
+
+
+def build_query_xml(request_id, timestamp, company, page, date_from, date_to):
+    NS_API = "http://schemas.nav.gov.hu/OSA/3.0/api"
+    root = build_request_root(
+        request_id, timestamp, company, "QueryInvoiceDigestRequest"
+    )
+
     # --- paging & direction ---
     ET.SubElement(root, f"{{{NS_API}}}page").text = str(page)
     ET.SubElement(root, f"{{{NS_API}}}invoiceDirection").text = "INBOUND"
@@ -333,8 +340,7 @@ def build_query_xml(
 
 
 
-def parse_response(xml_text):
-    NS_API = "http://schemas.nav.gov.hu/OSA/3.0/api"
+def parse_nav_envelope(xml_text):
     NS_COMMON = "http://schemas.nav.gov.hu/NTCA/1.0/common"
 
     root = ET.fromstring(xml_text)
@@ -347,6 +353,13 @@ def parse_response(xml_text):
         message = root.findtext(f".//{{{NS_COMMON}}}message", "")
         details = f": {message}" if message else ""
         raise ValueError(f"NAV API {error_code}{details}")
+
+    return root
+
+
+def parse_response(xml_text):
+    NS_API = "http://schemas.nav.gov.hu/OSA/3.0/api"
+    root = parse_nav_envelope(xml_text)
 
     current_page = int(
         root.findtext(f".//{{{NS_API}}}currentPage", "0")
@@ -367,6 +380,148 @@ def parse_response(xml_text):
     
     print("Invoices parsed:", len(rows))
     return rows, current_page, available_page
+
+
+def build_invoice_data_xml(request_id, timestamp, company, invoice):
+    ns = "http://schemas.nav.gov.hu/OSA/3.0/api"
+    root = build_request_root(
+        request_id, timestamp, company, "QueryInvoiceDataRequest"
+    )
+    query = ET.SubElement(root, f"{{{ns}}}invoiceNumberQuery")
+    for name, value in (
+        ("invoiceNumber", invoice.get("invoiceNumber")),
+        ("invoiceDirection", "INBOUND"),
+        ("supplierTaxNumber", invoice.get("supplierTaxNumber")),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"OPG detail query requires {name}")
+        ET.SubElement(query, f"{{{ns}}}{name}").text = value
+    return ET.tostring(root, encoding="utf-8")
+
+
+def parse_opg_amounts(xml_text, invoice):
+    """Derive invoice-currency net/VAT from NAV's OPG simplified summaries.
+
+    VAT content is a fraction of gross, not a percentage of net. Round the
+    aggregate VAT to two decimals; net is the remaining summary gross.
+    """
+    ns = {
+        "a": "http://schemas.nav.gov.hu/OSA/3.0/api",
+        "d": "http://schemas.nav.gov.hu/OSA/3.0/data",
+        "b": "http://schemas.nav.gov.hu/OSA/3.0/base",
+    }
+    root = parse_nav_envelope(xml_text)
+    if root.tag != f"{{{ns['a']}}}QueryInvoiceDataResponse":
+        raise ValueError("Unexpected NAV invoice detail response")
+    result = root.find("a:invoiceDataResult", ns)
+    if result is None:
+        raise ValueError("OPG invoice details were not found")
+    encoded = result.findtext("a:invoiceData", "", ns)
+    payload = base64.b64decode("".join(encoded.split()), validate=True)
+    compressed = result.findtext("a:compressedContentIndicator", "", ns).strip()
+    if compressed in ("true", "1"):
+        payload = gzip.decompress(payload)
+    elif compressed not in ("false", "0"):
+        raise ValueError("Invalid invoice detail compression indicator")
+    data = ET.fromstring(payload)
+    if data.tag != f"{{{ns['d']}}}InvoiceData":
+        raise ValueError("Unsupported OPG invoice data schema")
+    if data.findtext("d:invoiceNumber", namespaces=ns) != invoice["invoiceNumber"]:
+        raise ValueError("OPG detail invoice number does not match digest")
+    detail = data.find("d:invoiceMain/d:invoice", ns)
+    if detail is None:
+        raise ValueError("Expected a single OPG invoice")
+    supplier = detail.findtext(
+        "d:invoiceHead/d:supplierInfo/d:supplierTaxNumber/b:taxpayerId",
+        namespaces=ns,
+    )
+    if supplier != invoice["supplierTaxNumber"]:
+        raise ValueError("OPG detail supplier does not match digest")
+    currency = detail.findtext(
+        "d:invoiceHead/d:invoiceDetail/d:currencyCode", namespaces=ns
+    )
+    if not currency or (invoice.get("currency") and currency != invoice["currency"]):
+        raise ValueError("OPG detail currency does not match digest")
+    groups = detail.findall("d:invoiceSummary/d:summarySimplified", ns)
+    if not groups:
+        raise ValueError("OPG invoice has no simplified summary amounts")
+
+    def number(text):
+        try:
+            value = Decimal(text) if text is not None else Decimal("NaN")
+        except InvalidOperation:
+            raise ValueError("Invalid OPG summary amount or VAT content") from None
+        if not value.is_finite():
+            raise ValueError("Missing or invalid OPG summary amount or VAT content")
+        return value
+
+    gross = Decimal(0)
+    vat = Decimal(0)
+    for group in groups:
+        amount = number(group.findtext("d:vatContentGrossAmount", namespaces=ns))
+        rate = group.find("d:vatRate", ns)
+        if rate is None or len(rate) != 1:
+            raise ValueError("Missing or ambiguous OPG VAT treatment")
+        treatment = rate[0]
+        if treatment.tag == f"{{{ns['d']}}}vatContent":
+            fraction = number(treatment.text)
+            if not 0 <= fraction <= 1:
+                raise ValueError("Invalid OPG VAT content range")
+        elif treatment.tag in (
+            f"{{{ns['d']}}}vatExemption", f"{{{ns['d']}}}vatOutOfScope"
+        ):
+            if not treatment.findtext("d:case", namespaces=ns):
+                raise ValueError("Missing OPG VAT exemption or scope case")
+            fraction = Decimal(0)
+        else:
+            raise ValueError("Unsupported OPG VAT treatment")
+        gross += amount
+        vat += amount * fraction
+    vat = vat.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return {
+        "invoiceNetAmount": str(gross - vat),
+        "invoiceVatAmount": str(vat),
+        "currency": currency,
+    }
+
+
+def enrich_opg_amounts(company, rows):
+    """Fetch missing OPG amounts before export; failures use company isolation."""
+    cache = {}
+    for row in rows:
+        missing = [
+            field for field in ("invoiceNetAmount", "invoiceVatAmount")
+            if pd.isna(pd.to_numeric(row.get(field), errors="coerce"))
+        ]
+        if row.get("source") != "OPG" or not missing:
+            continue
+        key = (row.get("supplierTaxNumber"), row.get("invoiceNumber"), row.get("currency"))
+        if key not in cache:
+            xml = build_invoice_data_xml(uuid.uuid4().hex[:30], utc_now_iso(), company, row)
+            response_text = ""
+            try:
+                response = requests.post(
+                    f"{company['nav_base_url'].rstrip('/')}/queryInvoiceData",
+                    data=xml,
+                    headers={"Content-Type": "application/xml", "Accept": "application/xml"},
+                    timeout=30,
+                )
+                response_text = response.text
+                if response.status_code != 200:
+                    raise ValueError(f"NAV HTTP {response.status_code}")
+                cache[key] = parse_opg_amounts(response_text, row)
+            except (requests.RequestException, ET.ParseError, ValueError,
+                    binascii.Error, OSError, EOFError, zlib.error, InvalidOperation) as error:
+                message = ("NAV invoice detail request failed"
+                           if isinstance(error, requests.RequestException) else str(error))
+                raise RuntimeError(
+                    f"OPG amount enrichment failed: {message}",
+                    xml.decode("utf-8"), response_text,
+                ) from error
+        for field in missing:
+            row[field] = cache[key][field]
+        if not row.get("currency"):
+            row["currency"] = cache[key]["currency"]
 
 
 def add_calculated_amounts(df):
@@ -438,6 +593,7 @@ def fetch_all_invoices(company, date_from, date_to):
             break
         page += 1
 
+    enrich_opg_amounts(company, all_rows)
     return pd.DataFrame(all_rows), last_request_xml, last_response_text
 
 

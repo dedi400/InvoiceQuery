@@ -16,6 +16,7 @@ HTTP service / function: weekly_invoice_export
       |       |
       |       +--> QueryInvoiceDigestRequest, INBOUND
       |       +--> all result pages
+      |       +--> QueryInvoiceDataRequest for missing OPG amounts
       |
       +--> pandas transformation / schema selection
       |
@@ -66,7 +67,8 @@ For each active company:
 6. Reject HTTP failures and HTTP 200 responses whose common `result/funcCode` is `ERROR`, retaining the request XML and response body for the summary log.
 7. Parse `currentPage`, `availablePage` and each namespace-qualified `invoiceDigest` only after the business result succeeds.
 8. Continue until the last available page.
-9. Return a pandas DataFrame.
+9. Retrieve full invoice data for OPG rows with missing/invalid net or VAT amounts, and fill those amounts from simplified summaries.
+10. Return a pandas DataFrame.
 
 ### NAV namespaces
 
@@ -82,6 +84,7 @@ Element namespace placement is schema-sensitive. The current code was corrected 
 After retrieval:
 
 ```python
+df = add_calculated_amounts(df)
 df = df.reindex(columns=OUTPUT_COLUMNS)
 df[DATE_COLUMNS] = df[DATE_COLUMNS].apply(pd.to_datetime, errors="coerce")
 df[NUMERIC_COLUMNS] = df[NUMERIC_COLUMNS].apply(pd.to_numeric, errors="coerce")
@@ -153,3 +156,17 @@ Job-level failures such as inability to load the configuration workbook still ap
 The export intentionally adds `invoiceGrossAmount` through `add_calculated_amounts`, before selecting `OUTPUT_COLUMNS`. It sums `invoiceNetAmount` and `invoiceVatAmount`, both in the invoice currency, after numeric coercion. Missing or invalid inputs leave gross blank; zero and negative values retain their arithmetic meaning. The `*HUF` amounts are not used. The existing column name is retained for workbook compatibility, and historical rows without gross are not backfilled by this change.
 
 This is a calculated export value, not a retrieved gross total or a reconciled payable balance. It is not guaranteed to match the reported invoice gross: the bundled specification's warning 880 explicitly checks for differences between reported gross and net plus VAT. A requirement to retrieve the reported gross or other full invoice data must use `queryInvoiceData` and account for its full response model.
+
+### OPG amount retrieval
+
+After digest pagination, `enrich_opg_amounts` calls `/queryInvoiceData` for OPG rows with missing or invalid net/VAT amounts. Queries use the digest invoice number, `INBOUND`, and supplier tax number (the VAT group number where applicable). OPG invoices do not use batch modifications. Repeated lookups for the same supplier, invoice and currency are cached within that company's run. Complete OPG rows and non-OPG rows require no detail calls.
+
+The response is BASE64-decoded and, when indicated, GZIP-decompressed. The parser checks the NAV 3.0 data namespace, invoice number, supplier and currency before reading `invoiceMain/invoice/invoiceSummary/summarySimplified`. It uses invoice-currency `vatContentGrossAmount`, never the HUF counterpart or line totals.
+
+For each summary group, VAT is gross multiplied by the supplied `vatContent` fraction. Explicit `vatExemption` and `vatOutOfScope` groups contribute zero VAT. Missing or unsupported VAT treatment is an error, not zero VAT. Decimal arithmetic sums all groups, rounds aggregate VAT to two decimals using half-up rounding, and derives net as summary gross minus that VAT. This rounding is an export convention. NAV's rounded VAT-content fractions can produce a slightly different net from dividing by a nominal VAT rate. Zero and negative amounts retain their signs.
+
+Only missing/invalid digest amounts are filled; valid digest amounts remain authoritative. A missing digest currency is filled from the detail. `add_calculated_amounts` still calculates exported gross as net plus VAT. The separate reported `summaryGrossData/invoiceGrossAmount` is not substituted, so exported gross remains calculated.
+
+HTTP, business, decoding, identity and amount-parsing failures (including no matching detail) fail that company's run before its workbook is updated. The existing weekly summary captures the failing detail request and response; remaining companies continue. Successful full invoice payloads are used in memory only. Diagnostic XML remains sensitive operational data.
+
+No configuration or runtime dependency is added. Each distinct incomplete OPG invoice adds one sequential request with a 30-second timeout. Historical workbook rows are not backfilled; rerunning a historical interval would append rows under the existing rolling-workbook behaviour.
